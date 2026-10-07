@@ -24,26 +24,28 @@ This repository adopts the **multi-module layout** (similar to `gofiber/contrib`
 fiber-extras/
 ├── go.work                    # Go workspace for local multi-module development
 ├── README.md                  # Root documentation
-├── <package-a>/
-│   ├── go.mod                 # Isolated module definition
-│   ├── go.sum
-│   ├── <package-a>.go         # Core implementation (Pure Fiber v3)
-│   ├── <package-a>_test.go
-│   ├── starter/               # (Optional) Fiber-starter specific adapter
-│   └── README.md              # Package documentation
-└── <package-b>/
-    ├── go.mod
-    └── ...
+└── v3/
+    ├── rbac/
+    │   ├── go.mod             # Isolated module (github.com/rachmanzz/fiber-extras/v3/rbac)
+    │   ├── go.sum
+    │   ├── rbac.go            # Pure Fiber v3 RBAC middleware & guards
+    │   ├── tenant.go          # Multi-tenant RBAC support
+    │   ├── starter.go         # fiber-starter adapter & helpers
+    │   ├── rbac_test.go
+    │   └── README.md          # Package documentation
+    └── <other-package>/
+        ├── go.mod
+        └── ...
 ```
 
 ---
 
 ## 📦 Installation
 
-To install any package from `fiber-extras`, target the specific module path:
+To install any package from `fiber-extras`, target the specific module path under `v3/`:
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/<package-name>
+go get github.com/rachmanzz/fiber-extras/v3/<package-name>
 ```
 
 > **Note:** Because each package is its own module, you only download dependencies specific to that package without pulling the rest of the repository.
@@ -98,9 +100,9 @@ import (
 
 ## 🗺️ Packages Directory
 
-| Package | Status | Description |
-| :--- | :---: | :--- |
-| *Planning / In-progress* | 🚧 | Modular packages will be listed here as they are added. |
+| Package | Module Import Path | Status | Description |
+| :--- | :--- | :---: | :--- |
+| [rbac](v3/rbac) | `github.com/rachmanzz/fiber-extras/v3/rbac` | ✅ Ready | RBAC middleware and route guards powered by `rbacgo`, supporting multi-tenant & `fiber-starter`. |
 
 ---
 
@@ -127,7 +129,11 @@ go work init
 To run tests across all modules in the workspace:
 
 ```bash
-go test ./...
+# Run tests for a specific module
+go test -v ./v3/rbac/...
+
+# Or run tests directly within any submodule directory
+cd v3/rbac && go test -v ./...
 ```
 
 ---
