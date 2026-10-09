@@ -1,3 +1,15 @@
 go 1.26.0
 
-use ./v3/rbac
+use (
+	./v3/worker
+	./v3/queue
+	./v3/queue-redis
+	./v3/queue-nats
+	./v3/queue-rabbitmq
+	./v3/queue-postgres
+)
+
+
+
+
+

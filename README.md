@@ -25,14 +25,14 @@ fiber-extras/
 ├── go.work                    # Go workspace for local multi-module development
 ├── README.md                  # Root documentation
 └── v3/
-    ├── rbac/
-    │   ├── go.mod             # Isolated module (github.com/rachmanzz/fiber-extras/v3/rbac)
-    │   ├── go.sum
-    │   ├── rbac.go            # Pure Fiber v3 RBAC middleware & guards
-    │   ├── tenant.go          # Multi-tenant RBAC support
-    │   ├── starter.go         # fiber-starter adapter & helpers
-    │   ├── rbac_test.go
+    ├── worker/
+    │   ├── go.mod             # Isolated module (github.com/rachmanzz/fiber-extras/v3/worker)
+    │   ├── engine.go          # Core worker engine
+    │   ├── subworker.go       # Fan-out sub-workers
+    │   ├── task.go            # Periodic and dynamic tasks
+    │   ├── engine_test.go
     │   └── README.md          # Package documentation
+    ├── queue/
     └── <other-package>/
         ├── go.mod
         └── ...
@@ -102,7 +102,12 @@ import (
 
 | Package | Module Import Path | Status | Description |
 | :--- | :--- | :---: | :--- |
-| [rbac](v3/rbac) | `github.com/rachmanzz/fiber-extras/v3/rbac` | ✅ Ready | RBAC middleware and route guards powered by `rbacgo`, supporting multi-tenant & `fiber-starter`. |
+| [worker](v3/worker) | `github.com/rachmanzz/fiber-extras/v3/worker` | ✅ Ready | Resilient background worker engine with parallel sub-worker fan-out, panic safety & `fiber-starter` hooks. |
+| [queue](v3/queue) | `github.com/rachmanzz/fiber-extras/v3/queue` | ✅ Ready | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
+| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/fiber-extras/v3/queue-redis` | ✅ Ready | Production Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
+| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | ✅ Ready | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
+| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | ✅ Ready | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
+| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | ✅ Ready | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
 
 ---
 
@@ -130,10 +135,10 @@ To run tests across all modules in the workspace:
 
 ```bash
 # Run tests for a specific module
-go test -v ./v3/rbac/...
+go test -v ./v3/worker/...
 
 # Or run tests directly within any submodule directory
-cd v3/rbac && go test -v ./...
+cd v3/worker && go test -v ./...
 ```
 
 ---
