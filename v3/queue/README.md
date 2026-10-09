@@ -236,38 +236,38 @@ runner.Run()
 
 ---
 
-## 🚀 4. Panduan Lengkap Integrasi di `fiber-starter`
+## 🚀 4. Full Integration Guide with `fiber-starter`
 
-Di proyek berbasis [fiber-starter](https://github.com/rachmanzz/fiber-starter), queue dapat dijalankan dalam **dua mode**:
-- **Mode Web Server (In-Process)**: Queue consumer berjalan bersamaan di dalam server HTTP Fiber.
-- **Mode Standalone Worker**: Queue consumer berjalan sebagai daemon terpisah (misal di pod/worker container k8s via `cmd/queue/main.go`).
+In projects based on [fiber-starter](https://github.com/rachmanzz/fiber-starter), the queue engine can run in **two modes**:
+- **Web Server Mode (In-Process)**: Queue consumers run concurrently within the main Fiber HTTP server process.
+- **Standalone Worker Daemon Mode**: Queue consumers run in a dedicated background process (e.g. separate Kubernetes worker pods via `cmd/queue/main.go`).
 
 ---
 
-### 4.1 Struktur File Rekomendasi di `fiber-starter`
+### 4.1 Recommended File Structure in `fiber-starter`
 
 ```text
 fiber-starter/
 ├── app/
 │   ├── events/
-│   │   ├── queue.go              # Registrasi semua topik antrean
+│   │   ├── queue.go              # Central registration for all queue topics
 │   │   └── queues/
-│   │       ├── email_welcome.go  # Handler topik email
-│   │       └── report_export.go  # Handler topik export laporan
+│   │       ├── email_welcome.go  # Welcome email task handler
+│   │       └── report_export.go  # Report export task handler
 │   └── services/
-│       └── user_service.go       # Dispatch pesan antrean dari service
+│       └── user_service.go       # Dispatches queue messages from business services
 ├── bootstrap/
-│   └── hook.go                   # Inisialisasi driver & lifecycle hooks
+│   └── hook.go                   # Driver initialization & lifecycle hooks
 └── cmd/
-    ├── web/main.go               # Entrypoint HTTP server
-    └── queue/main.go             # Entrypoint standalone worker daemon (opsional)
+    ├── web/main.go               # HTTP server entrypoint
+    └── queue/main.go             # Standalone worker daemon entrypoint (optional)
 ```
 
 ---
 
-### 4.2 Inisialisasi di `bootstrap/hook.go` (Mode Web Server)
+### 4.2 Initialization in `bootstrap/hook.go` (Web Server Mode)
 
-Hubungkan adapter broker dan daftarkan topik di dalam lifecycle hook aplikasi:
+Attach the broker adapter and register topics inside the application's lifecycle hooks:
 
 ```go
 package bootstrap
@@ -286,32 +286,32 @@ func RegisterHook(core *cores.AppContracts) {
     }
 
     core.RegisterBeforeStart(func() error {
-        // 1. Hubungkan koneksi broker (contoh: Redis)
+        // 1. Initialize broker connection (e.g. Redis)
         if cores.Config().Redis.Enable {
             redisprovider.Connect()
             rdb := redisprovider.Client()
             driver := redisadapter.New(rdb, cores.Config().Redis.Prefix)
             queue.SetDriver(driver)
         } else {
-            // Fallback ke in-memory jika Redis dimatikan
+            // Fallback to in-memory driver when Redis is disabled
             queue.SetDriver(queue.NewMemoryDriver())
         }
 
-        // 2. Daftarkan seluruh handler topik aplikasi
+        // 2. Register all application topic handlers
         events.RegisterQueueTopics()
         return nil
     })
 
-    // 3. Pasang lifecycle hook agar consumer start saat PreStart dan drain saat OnPostShutdown
+    // 3. Register lifecycle hooks: consumers start on PreStart and drain gracefully on OnPostShutdown
     queue.RegisterStarterHook(core, core.App)
 }
 ```
 
 ---
 
-### 4.3 Menulis Topic Handler di `app/events/queues/`
+### 4.3 Writing Topic Handlers in `app/events/queues/`
 
-Buat handler tugas di folder `app/events/queues/`:
+Create modular task handlers under `app/events/queues/`:
 
 ```go
 package queues
@@ -336,17 +336,17 @@ func WelcomeEmailQueueHandler() queue.Handler {
     return func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
         var payload WelcomeEmailPayload
         if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-            // Error format payload tidak perlu di-retry, langsung lempar ke DLQ
+            // Malformed payloads should not retry, route directly to DLQ
             return queue.MarkNonRetryable(err)
         }
 
-        fmt.Printf("Mengirim welcome email ke %s (UserID: %s)\n", payload.Email, payload.UserID)
+        fmt.Printf("Sending welcome email to %s (UserID: %s)\n", payload.Email, payload.UserID)
         return nil
     }
 }
 ```
 
-Daftarkan di `app/events/queue.go`:
+Register handlers in `app/events/queue.go`:
 
 ```go
 package events
@@ -358,15 +358,15 @@ import (
 
 func RegisterQueueTopics() {
     queue.RegisterHandler(queues.TopicEmailWelcome, queues.WelcomeEmailQueueHandler())
-    // daftarkan topik lainnya...
+    // register additional topics...
 }
 ```
 
 ---
 
-### 4.4 Mengirim Pesan dari Service (`app/services/`)
+### 4.4 Dispatching Messages from Services (`app/services/`)
 
-Di dalam controller atau service, gunakan `queue.Dispatch`:
+In controllers or domain services, call `queue.Dispatch`:
 
 ```go
 package services
@@ -381,10 +381,10 @@ import (
 type UserService struct{}
 
 func (s *UserService) Register(ctx context.Context, email, name string) error {
-    // 1. Simpan user ke database...
+    // 1. Persist user into database...
     userID := "usr_12345"
 
-    // 2. Kirim pesan asynchronous ke queue
+    // 2. Dispatch asynchronous message to the queue
     err := queue.Dispatch(ctx, queues.TopicEmailWelcome, queues.WelcomeEmailPayload{
         UserID: userID,
         Email:  email,
@@ -399,9 +399,9 @@ func (s *UserService) Register(ctx context.Context, email, name string) error {
 
 ---
 
-### 4.5 Mode Standalone Worker Daemon (`cmd/queue/main.go`)
+### 4.5 Standalone Worker Daemon Mode (`cmd/queue/main.go`)
 
-Jika kamu ingin menjalankan worker di pod/container k8s terpisah dari web server:
+If you want to run worker consumers in separate containers or pods without serving HTTP requests:
 
 ```go
 package main
@@ -419,16 +419,16 @@ import (
 )
 
 func main() {
-    // 1. Inisialisasi core & config fiber-starter
+    // 1. Initialize core configuration and logger
     cores.NewLogger()
     redisprovider.Connect()
     rdb := redisprovider.Client()
 
-    // 2. Hubungkan driver & topik
+    // 2. Attach driver and register topic handlers
     queue.SetDriver(redisadapter.New(rdb, cores.Config().Redis.Prefix))
     events.RegisterQueueTopics()
 
-    // 3. Jalankan Runner dengan graceful shutdown
+    // 3. Launch standalone Runner with graceful shutdown
     runner := queue.NewRunner().Configure(
         queue.WithShutdownTimeout(30 * time.Second),
     )
