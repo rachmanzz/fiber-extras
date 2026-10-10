@@ -1,0 +1,51 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/v3/worker"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: "/v3/queue"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: "/v3/queue-redis"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: "/v3/queue-nats"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: "/v3/queue-rabbitmq"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: "/v3/queue-postgres"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

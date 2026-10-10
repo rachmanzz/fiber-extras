@@ -1,0 +1,53 @@
+# Runs the micro-benchmarks for the pure-Go core modules on every relevant
+# change, printing results into the job summary. Informational only: CI runner
+# hardware differs from the numbers recorded in README.md, so there is no
+# pass/fail threshold (use workflow_dispatch to run on demand).
+name: bench
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "v3/worker/**"
+      - "v3/queue/**"
+      - ".github/workflows/bench.yml"
+  pull_request:
+    paths:
+      - "v3/worker/**"
+      - "v3/queue/**"
+      - ".github/workflows/bench.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: Benchmark (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [v3/worker, v3/queue]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Run benchmarks
+        working-directory: ${{ matrix.module }}
+        run: |
+          {
+            printf '## Benchmarks — %s\n\n' "${{ matrix.module }}"
+            printf '```\n'
+            go test -run=^$ -bench=. -benchmem ./...
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

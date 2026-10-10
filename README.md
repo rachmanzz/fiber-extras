@@ -84,6 +84,34 @@ go test -v ./v3/worker/...
 cd v3/worker && go test -v ./...
 ```
 
+### Integration Tests (live brokers)
+
+The broker adapters (`queue-redis`, `queue-postgres`, `queue-nats`, `queue-rabbitmq`) ship live integration tests that exercise real brokers. They are gated by environment variables: when the matching variable is unset the test is skipped — except `queue-nats`, which falls back to an embedded in-process JetStream server.
+
+| Adapter | Environment variable |
+| :--- | :--- |
+| `v3/queue-redis` | `TEST_REDIS_ADDR` — e.g. `127.0.0.1:6379` |
+| `v3/queue-postgres` | `TEST_POSTGRES_DSN` — e.g. `postgres://fiber:secretpassword@127.0.0.1:5432/fiber_test?sslmode=disable` |
+| `v3/queue-nats` | `TEST_NATS_URL` — e.g. `nats://127.0.0.1:4222` (embedded server when unset) |
+| `v3/queue-rabbitmq` | `TEST_RABBITMQ_URL` — e.g. `amqp://fiber:secretpassword@127.0.0.1:5672/` |
+
+The fastest way to run the whole suite is the one-shot harness. It boots every broker in containers with healthchecks, runs the adapter tests with the race detector, and tears everything down afterwards (zero residue):
+
+```bash
+./scripts/test-all-brokers.sh
+```
+
+It requires one of `docker compose`, `podman-compose`, or `docker-compose`.
+
+To run a single adapter against a broker you already have:
+
+```bash
+cd v3/queue-redis
+TEST_REDIS_ADDR=127.0.0.1:6379 go test -v ./...
+```
+
+Each adapter also has a dedicated CI workflow under `.github/workflows/` that provisions its broker. Redis, PostgreSQL and RabbitMQ use GitHub `services:` containers; NATS uses an explicit `docker run` because JetStream requires command flags (`-js -m 8222`) that `services:` cannot pass.
+
 ---
 
 ## 🤝 Contributing
