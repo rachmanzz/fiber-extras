@@ -206,6 +206,26 @@ func (s *OrderService) ProcessOrder(ctx context.Context) error {
 
 ---
 
+## 📊 Benchmarks
+
+Measured using Go's standard benchmarking framework (`go test -bench=. -benchmem`) on Linux `amd64` (11th Gen Intel® Core™ i7-1165G7 @ 2.80GHz):
+
+```text
+goos: linux
+goarch: amd64
+pkg: github.com/rachmanzz/fiber-extras/v3/worker
+cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+BenchmarkWorker_Dispatch_Async-8     	 6498375	       162.2 ns/op	      88 B/op	       1 allocs/op
+BenchmarkWorker_ExecuteSync-8        	 4913364	       311.3 ns/op	     320 B/op	       4 allocs/op
+BenchmarkWorker_SubWorker_FanOut-8   	  318261	      3970 ns/op	     680 B/op	      18 allocs/op
+```
+
+- **Async Dispatch**: ~6.5 million ops/sec at only **1 heap allocation** per dispatch (channel schedule).
+- **Synchronous Execution**: ~4.9 million ops/sec with direct panic safety barrier and sync waiter channel.
+- **Parallel Sub-Worker Fan-Out**: ~318,000 sub-pools/sec coordinating concurrent sub-routines with dynamic semaphore acquisition, error grouping, and wait synchronization.
+
+---
+
 ## ⚙️ Configuration Reference
 
 | Parameter | Default | Description |
@@ -221,3 +241,4 @@ func (s *OrderService) ProcessOrder(ctx context.Context) error {
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+

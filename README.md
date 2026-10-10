@@ -12,102 +12,45 @@ Designed from the ground up for high versatility: **fully compatible with pure F
 - **Dual Compatibility**:
   - **Standard Fiber v3**: Idiomatic, zero-lock-in middleware and handlers adhering to core Fiber v3 standards.
   - **Fiber-Starter Optimized**: Dedicated adapter functions and configs tailored to `fiber-starter` conventions (standardized JSON/MsgPack responses, centralized error handlers, and structured logging).
-- **High Performance & Type-Safe**: Minimal memory allocations, clean configuration structs, and robust defaults.
+- **Efficient & Type-Safe**: Minimal heap allocations on hot dispatch paths, clean configuration structs, and sensible defaults backed by automated benchmarks.
 
 ---
 
-## 📂 Repository Architecture
+## 🚦 Package Maturity & Stability Status
 
-This repository adopts the **multi-module layout** (similar to `gofiber/contrib`). Each package is an independent Go module, isolated from one another:
+Because `fiber-extras` was extracted from real-world production workloads into a standalone open-source library, stability stages are explicitly communicated:
 
-```text
-fiber-extras/
-├── go.work                    # Go workspace for local multi-module development
-├── README.md                  # Root documentation
-└── v3/
-    ├── worker/
-    │   ├── go.mod             # Isolated module (github.com/rachmanzz/fiber-extras/v3/worker)
-    │   ├── engine.go          # Core worker engine
-    │   ├── subworker.go       # Fan-out sub-workers
-    │   ├── task.go            # Periodic and dynamic tasks
-    │   ├── engine_test.go
-    │   └── README.md          # Package documentation
-    ├── queue/
-    └── <other-package>/
-        ├── go.mod
-        └── ...
-```
+- **`🧪 Beta (v0.1.0)`**: Core architecture, APIs, unit tests, and benchmarks are complete and verified against real workloads. Ready for staging and production testing.
+- **`🌱 Alpha (v0.1.0)`**: Driver implementation and functional tests are complete, but awaiting extended high-concurrency production verification and stress testing.
 
----
-
-## 📦 Installation
-
-To install any package from `fiber-extras`, target the specific module path under `v3/`:
-
-```bash
-go get github.com/rachmanzz/fiber-extras/v3/<package-name>
-```
-
-> **Note:** Because each package is its own module, you only download dependencies specific to that package without pulling the rest of the repository.
-
----
-
-## 💡 Usage Paradigms
-
-Packages in `fiber-extras` provide two usage modes:
-
-### 1. Pure Fiber v3 (Standard / Global)
-
-Use the package directly with standard Fiber v3 instances:
-
-```go
-package main
-
-import (
-    "github.com/gofiber/fiber/v3"
-    // Example: importing a hypothetical extras package
-    // "github.com/rachmanzz/fiber-extras/<package-name>"
-)
-
-func main() {
-    app := fiber.New()
-
-    // Standard middleware / utility usage
-    // app.Use(<package-name>.New())
-
-    app.Listen(":3000")
-}
-```
-
-### 2. Fiber-Starter Integration
-
-When building with [fiber-starter](https://github.com/rachmanzz/fiber-starter), use starter-optimized constructors or adapters to automatically align with its response format, logging, and error handling pipeline:
-
-```go
-package main
-
-import (
-    // Example: importing starter adapter
-    // "github.com/rachmanzz/fiber-extras/<package-name>/starter"
-    // or using starter helper constructor: <package-name>.NewForStarter(...)
-)
-
-// Automatically integrates with fiber-starter's cores.AppContracts,
-// BaseResponse formatting, and custom error mappers.
-```
-
----
-
-## 🗺️ Packages Directory
-
-| Package | Module Import Path | Status | Description |
+| Package | Module Import Path | Maturity Status | Description |
 | :--- | :--- | :---: | :--- |
-| [worker](v3/worker) | `github.com/rachmanzz/fiber-extras/v3/worker` | ✅ Ready | Resilient background worker engine with parallel sub-worker fan-out, panic safety & `fiber-starter` hooks. |
-| [queue](v3/queue) | `github.com/rachmanzz/fiber-extras/v3/queue` | ✅ Ready | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
-| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/fiber-extras/v3/queue-redis` | ✅ Ready | Production Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
-| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | ✅ Ready | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
-| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | ✅ Ready | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
-| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | ✅ Ready | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
+| [worker](v3/worker) | `github.com/rachmanzz/fiber-extras/v3/worker` | `🧪 Beta (v0.1.0)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
+| [queue](v3/queue) | `github.com/rachmanzz/fiber-extras/v3/queue` | `🧪 Beta (v0.1.0)` | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
+| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/fiber-extras/v3/queue-redis` | `🧪 Beta (v0.1.0)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
+| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | `🌱 Alpha (v0.1.0)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
+| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | `🌱 Alpha (v0.1.0)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
+| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | `🌱 Alpha (v0.1.0)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
+
+---
+
+## 📊 Performance Benchmarks
+
+All benchmark results are measured using Go's built-in testing tool (`go test -bench=. -benchmem`) on Linux `amd64` (11th Gen Intel® Core™ i7-1165G7 @ 2.80GHz):
+
+### Worker Engine (`v3/worker`)
+| Benchmark | Operations | Latency | Memory / Op | Allocs / Op |
+| :--- | :---: | :---: | :---: | :---: |
+| `BenchmarkWorker_Dispatch_Async` | ~6.5M | **162.2 ns/op** | 88 B/op | **1 allocs/op** |
+| `BenchmarkWorker_ExecuteSync` | ~4.9M | **311.3 ns/op** | 320 B/op | **4 allocs/op** |
+| `BenchmarkWorker_SubWorker_FanOut` | ~318k | **3,970 ns/op** | 680 B/op | **18 allocs/op** |
+
+### Queue Engine (`v3/queue`)
+| Benchmark | Operations | Latency | Memory / Op | Allocs / Op |
+| :--- | :---: | :---: | :---: | :---: |
+| `BenchmarkQueue_Memory_EnqueueDequeue` | ~5.1M | **211.9 ns/op** | 80 B/op | **4 allocs/op** |
+| `BenchmarkQueue_Message_Creation` | ~1.5M | **780.2 ns/op** | 392 B/op | **9 allocs/op** |
+| `BenchmarkQueue_Dispatch_JSON` | ~20k | **117.7 µs/op** | 528 B/op | **12 allocs/op** |
 
 ---
 
