@@ -88,6 +88,8 @@ func TestPostgresDriver_Live(t *testing.T) {
 	def := newLiveMsg("email.send", queue.PriorityDefault)
 	high := newLiveMsg("email.send", queue.PriorityHigh)
 	crit := newLiveMsg("email.send", queue.PriorityCritical)
+	crit.Headers["content-type"] = "application/msgpack"
+	crit.Headers["x-audit"] = "kept"
 
 	// Enqueue in ascending priority so ordering is only attributable to the broker.
 	for _, m := range []*queue.Message{low, def, high, crit} {
@@ -104,6 +106,13 @@ func TestPostgresDriver_Live(t *testing.T) {
 		t.Fatalf("queue-postgres: expected 4 deliveries, got %d", len(deliveries))
 	}
 	assertOrder(t, deliveries, []string{crit.ID, high.ID, def.ID, low.ID})
+
+	if got := deliveries[0].Message.Headers["content-type"]; got != "application/msgpack" {
+		t.Fatalf("queue-postgres: headers not persisted, content-type = %q", got)
+	}
+	if got := deliveries[0].Message.Headers["x-audit"]; got != "kept" {
+		t.Fatalf("queue-postgres: header x-audit lost, got %q", got)
+	}
 
 	// Ack the critical message: the row must be deleted.
 	if err := driver.Ack(ctx, deliveries[0]); err != nil {
