@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # NOTE: NATS needs `-js` (JetStream) + a monitoring port, neither of which
       # can be passed via a `services:` container (services support no command
@@ -55,7 +55,7 @@ jobs:
           docker logs nats
           exit 1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: v3/queue-nats/go.mod
           cache-dependency-path: v3/**/go.sum
