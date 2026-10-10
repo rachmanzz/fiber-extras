@@ -61,3 +61,21 @@ func TestRedisDriver_NewAdapterAlias(t *testing.T) {
 		t.Fatalf("expected name 'redis', got %s", adapter.Name())
 	}
 }
+
+func TestRedisDriver_CapabilityConsistency(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	defer client.Close()
+
+	driver := queueredis.New(client)
+
+	_, replayer := any(driver).(queue.Replayer)
+	_, delayed := any(driver).(queue.DelayedEnqueuer)
+	caps := driver.Capabilities()
+
+	if caps.Replay != replayer {
+		t.Fatalf("Replay capability (%v) disagrees with Replayer implementation (%v)", caps.Replay, replayer)
+	}
+	if caps.DelayedEnqueue != delayed {
+		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
+	}
+}

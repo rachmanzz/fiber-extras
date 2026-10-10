@@ -30,3 +30,18 @@ func TestPostgresDriver_Capabilities(t *testing.T) {
 		t.Fatalf("expected name 'postgres', got %s", driver.Name())
 	}
 }
+
+func TestPostgresDriver_CapabilityConsistency(t *testing.T) {
+	driver := queuepostgres.New(nil, queuepostgres.WithTableName("custom_queue"))
+
+	_, replayer := any(driver).(queue.Replayer)
+	_, delayed := any(driver).(queue.DelayedEnqueuer)
+	caps := driver.Capabilities()
+
+	if caps.Replay != replayer {
+		t.Fatalf("Replay capability (%v) disagrees with Replayer implementation (%v)", caps.Replay, replayer)
+	}
+	if caps.DelayedEnqueue != delayed {
+		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
+	}
+}

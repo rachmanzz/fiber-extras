@@ -1,0 +1,53 @@
+# Core modules: v3/worker + v3/queue (pure Go, no broker required).
+name: core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v3/worker/**"
+      - "v3/queue/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/core.yml"
+  pull_request:
+    paths:
+      - "v3/worker/**"
+      - "v3/queue/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/core.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [v3/worker, v3/queue]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Vet and format check
+        working-directory: ${{ matrix.module }}
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)"
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: go test -v -count=1 -cover -race ./...

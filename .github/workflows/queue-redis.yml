@@ -1,0 +1,63 @@
+# v3/queue-redis integration tests against a live Redis service.
+name: queue-redis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v3/queue-redis/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-redis.yml"
+  pull_request:
+    paths:
+      - "v3/queue-redis/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-redis.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Integration (Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "127.0.0.1:6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/queue-redis/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Vet and format check
+        working-directory: v3/queue-redis
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)"
+
+      - name: Test against live Redis
+        working-directory: v3/queue-redis
+        env:
+          TEST_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -v -count=1 -cover -race ./...

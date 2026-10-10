@@ -1,0 +1,67 @@
+# v3/queue-postgres integration tests against a live PostgreSQL service.
+name: queue-postgres
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v3/queue-postgres/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-postgres.yml"
+  pull_request:
+    paths:
+      - "v3/queue-postgres/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-postgres.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Integration (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fiber
+          POSTGRES_PASSWORD: secretpassword
+          POSTGRES_DB: fiber_test
+        ports:
+          - "127.0.0.1:5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U fiber -d fiber_test"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/queue-postgres/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Vet and format check
+        working-directory: v3/queue-postgres
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)"
+
+      - name: Test against live PostgreSQL
+        working-directory: v3/queue-postgres
+        env:
+          TEST_POSTGRES_DSN: postgres://fiber:secretpassword@127.0.0.1:5432/fiber_test?sslmode=disable
+        run: go test -v -count=1 -cover -race ./...

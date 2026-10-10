@@ -95,4 +95,3 @@ func (c *customLogger) Debug(msg string, args ...any) { c.debug(msg, args...) }
 func (c *customLogger) Info(msg string, args ...any)  { c.info(msg, args...) }
 func (c *customLogger) Warn(msg string, args ...any)  { c.warn(msg, args...) }
 func (c *customLogger) Error(msg string, args ...any) { c.err(msg, args...) }
-

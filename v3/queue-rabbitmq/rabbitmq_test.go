@@ -23,3 +23,18 @@ func TestRabbitMQAdapter_Capabilities(t *testing.T) {
 		t.Fatalf("expected name 'rabbitmq', got %s", adapter.Name())
 	}
 }
+
+func TestRabbitMQAdapter_CapabilityConsistency(t *testing.T) {
+	adapter := &queuerabbitmq.RabbitMQAdapter{}
+
+	_, replayer := any(adapter).(queue.Replayer)
+	_, delayed := any(adapter).(queue.DelayedEnqueuer)
+	caps := adapter.Capabilities()
+
+	if caps.Replay != replayer {
+		t.Fatalf("Replay capability (%v) disagrees with Replayer implementation (%v)", caps.Replay, replayer)
+	}
+	if caps.DelayedEnqueue != delayed {
+		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
+	}
+}

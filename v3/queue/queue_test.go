@@ -281,3 +281,18 @@ func TestQueue_MultiDriver_Routing(t *testing.T) {
 	}
 }
 
+func TestQueue_MemoryDriver_CapabilityConsistency(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	defer func() { _ = driver.Close() }()
+
+	_, replayer := any(driver).(queue.Replayer)
+	_, delayed := any(driver).(queue.DelayedEnqueuer)
+	caps := driver.Capabilities()
+
+	if caps.Replay != replayer {
+		t.Fatalf("Replay capability (%v) disagrees with Replayer implementation (%v)", caps.Replay, replayer)
+	}
+	if caps.DelayedEnqueue != delayed {
+		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
+	}
+}

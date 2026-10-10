@@ -12,7 +12,7 @@ import (
 	"github.com/rachmanzz/fiber-extras/v3/queue"
 )
 
-// NATSAdapter implements queue.Adapter and queue.Replayer for NATS JetStream.
+// NATSAdapter implements queue.Adapter for NATS JetStream.
 type NATSAdapter struct {
 	mu         sync.RWMutex
 	nc         *nats.Conn
@@ -179,7 +179,7 @@ func (n *NATSAdapter) Capabilities() queue.Capabilities {
 		NativePriority:    queue.PrioritySoft,
 		DelayedEnqueue:    false,
 		StrictGlobalOrder: false,
-		Replay:            true,
+		Replay:            false,
 		Dedup:             true,
 		MaxBatchSize:      1000,
 		Guarantee:         queue.EffectivelyOnce,

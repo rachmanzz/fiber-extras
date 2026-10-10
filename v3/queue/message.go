@@ -29,8 +29,8 @@ type Message struct {
 	GroupOrder  int               `json:"group_order,omitempty"` // Sequential ordering index within group
 	Headers     map[string]string `json:"headers,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
-	Attempt     int               `json:"attempt"`      // Core-owned attempt count
-	MaxAttempts int               `json:"max_attempts"` // Core-owned max attempts before DLQ
+	Attempt     int               `json:"attempt"`          // Core-owned attempt count
+	MaxAttempts int               `json:"max_attempts"`     // Core-owned max attempts before DLQ
 	Driver      string            `json:"driver,omitempty"` // Explicit driver target (optional)
 }
 

@@ -1,0 +1,78 @@
+# v3/queue-nats integration tests against a live NATS JetStream service,
+# plus the embedded in-process NATS fallback path (no broker).
+name: queue-nats
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v3/queue-nats/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-nats.yml"
+  pull_request:
+    paths:
+      - "v3/queue-nats/**"
+      - "v3/queue/**"
+      - "v3/worker/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/queue-nats.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Integration (NATS JetStream)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: NATS needs `-js` (JetStream) + a monitoring port, neither of which
+      # can be passed via a `services:` container (services support no command
+      # args), and a repo bind-mount would fail because service containers start
+      # before `actions/checkout`. So we start it as an explicit step instead.
+      - name: Start NATS JetStream
+        run: |
+          docker run -d --rm --name nats -p 4222:4222 -p 8222:8222 nats:2.10-alpine -js -m 8222
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8222/varz >/dev/null; then
+              echo "NATS JetStream is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "NATS did not become ready in time" >&2
+          docker logs nats
+          exit 1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: v3/queue-nats/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Vet and format check
+        working-directory: v3/queue-nats
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l .)"
+
+      - name: Test against live NATS (JetStream)
+        working-directory: v3/queue-nats
+        env:
+          TEST_NATS_URL: nats://127.0.0.1:4222
+        run: go test -v -count=1 -cover -race ./...
+
+      - name: Test embedded NATS fallback (no broker)
+        working-directory: v3/queue-nats
+        env:
+          TEST_NATS_URL: ""
+        run: go test -v -count=1 -cover -race ./...

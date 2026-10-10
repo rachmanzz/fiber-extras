@@ -1,0 +1,111 @@
+# Episodic integration test harness (one-shot runner).
+#
+# Boots every broker with healthchecks, runs the Go integration test suite
+# inside a single ephemeral container, and exits with the test result.
+# Combined with:
+#
+#   ./scripts/test-all-brokers.sh
+#
+# ... all containers and volumes are torn down automatically when the suite
+# finishes (pass or fail), leaving zero residue behind.
+#
+# The runner mounts the repository root so the go.work workspace resolves
+# every v3/* module, and points the TEST_* variables at the broker services.
+
+services:
+  redis:
+    image: docker.io/library/redis:7-alpine
+    volumes:
+      # Explicit named volumes avoid podman-compose's flaky anonymous-volume
+      # creation under rootless podman (which corrupts rabbitmq's Erlang cookie).
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 15
+
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: fiber
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: fiber_test
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiber -d fiber_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 15
+
+  nats:
+    image: docker.io/library/nats:2.10-alpine
+    # -js enables JetStream; -m 8222 opens the monitor port used by the healthcheck.
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/varz"]
+      interval: 1s
+      timeout: 3s
+      retries: 15
+
+  rabbitmq:
+    image: docker.io/library/rabbitmq:3-management-alpine
+    # Run directly as the image's `rabbitmq` user (uid 100, gid 101).
+    # Under rootless podman, podman-compose mounts data volumes in a way that
+    # breaks the entrypoint's root -> rabbitmq privilege drop (the Erlang cookie
+    # ends up root-owned and unreadable, crashing prelaunch with EACCES).
+    # Starting as the target user skips that code path entirely.
+    user: "100:101"
+    environment:
+      # Deterministic non-guest credentials (guest is loopback-restricted by
+      # default and unreliable behind container networking).
+      RABBITMQ_DEFAULT_USER: fiber
+      RABBITMQ_DEFAULT_PASS: secretpassword
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  test-runner:
+    # Debian-based image ships gcc so the race detector (-race) works, matching
+    # the exact command CI runs under GitHub Actions.
+    image: docker.io/library/golang:1.26
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # Keep the toolchain hermetic: use the image's Go, no toolchain downloads.
+      - GOTOOLCHAIN=local
+      - TEST_REDIS_ADDR=redis:6379
+      - TEST_POSTGRES_DSN=postgres://fiber:secretpassword@postgres:5432/fiber_test?sslmode=disable
+      - TEST_NATS_URL=nats://nats:4222
+      - TEST_RABBITMQ_URL=amqp://fiber:secretpassword@rabbitmq:5672/
+    command: >-
+      sh -c "go test -v -count=1 -cover -race
+      ./v3/queue-redis/...
+      ./v3/queue-postgres/...
+      ./v3/queue-nats/...
+      ./v3/queue-rabbitmq/..."
+
+volumes:
+  redis-data:
+  postgres-data:
+  rabbitmq-data:
+  go-mod-cache:
+  go-build-cache:
