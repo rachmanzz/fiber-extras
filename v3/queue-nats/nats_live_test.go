@@ -82,6 +82,7 @@ func startNATSForTest(t *testing.T) (*nats.Conn, queuenats.Config) {
 	}
 
 	srv, err := server.NewServer(&server.Options{
+		Port:      -1,
 		JetStream: true,
 		StoreDir:  t.TempDir(),
 		NoLog:     true,
