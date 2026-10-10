@@ -33,8 +33,7 @@ go get github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq  # RabbitMQ AMQP 0.9.
 - **Coordinated Group Batching**: FIFO execution per group (`WithGroup(groupID, order)`).
 - **Parallel Sub-Worker Fan-Out**: Topic handlers receive `worker.SubWorkerPool` to spawn concurrent sub-tasks with bounded semaphore throttling and fail-fast cancellation.
 - **Centralized Retry & DLQ**: Exponential backoff with random jitter; non-retryable errors or exhausted attempts are automatically routed to `<topic>:dlq`.
-- **Standalone Daemon Runner**: Deploy dedicated worker containers/pods with OS signal traps (`SIGINT`, `SIGTERM`) and graceful drain timeouts using `queue.Runner`.
-- **Fiber-Starter Lifecycle Hooks**: Seamless integration with `cores.AppContracts` and Fiber v3 shutdown hooks.
+- **Clean Lifecycle Integration**: Start and stop consumers directly inside `cores.AppContracts` and Fiber v3 shutdown hooks without wrappers.
 
 ---
 
@@ -299,11 +298,17 @@ func RegisterHook(core *cores.AppContracts) {
 
         // 2. Register all application topic handlers
         events.RegisterQueueTopics()
-        return nil
+
+        // 3. Start queue consumer(s)
+        _, err := queue.StartConsumer()
+        return err
     })
 
-    // 3. Register lifecycle hooks: consumers start on PreStart and drain gracefully on OnPostShutdown
-    queue.RegisterStarterHook(core, core.App)
+    // 4. Drain and stop queue consumers on Fiber shutdown
+    core.App.Hooks().OnPostShutdown(func(err error) error {
+        queue.StopConsumer()
+        return nil
+    })
 }
 ```
 

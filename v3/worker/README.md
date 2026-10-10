@@ -6,7 +6,7 @@ High-performance background worker engine and task concurrency orchestrator for 
 
 Engineered around three core principles:
 1. **Pure Go Core (Zero External Dependencies)** — The core engine is built purely on Go's standard library (`sync`, `chan`, `context`, `log/slog`), making it suitable for CLI, HTTP servers, microservices, and background daemons alike.
-2. **First-Class [fiber-starter](https://github.com/rachmanzz/fiber-starter) Integration** — Features out-of-the-box lifecycle hooks (`RegisterStarterHook`, `RegisterAppHooks`) for effortless integration into Fiber v3 graceful shutdown without boilerplate.
+2. **First-Class [fiber-starter](https://github.com/rachmanzz/fiber-starter) Integration** — Features clean, direct lifecycle methods (`InitGlobal`, `Shutdown`) for effortless integration into Fiber v3 graceful shutdown without wrappers or boilerplate.
 3. **Resilient Parallelism (Sub-Worker Fan-Out & Panic Safety)** — Native support for parent-to-child task splitting with bounded semaphore throttling, isolated panic recovery per goroutine, and fail-fast context propagation.
 
 ---
@@ -106,20 +106,27 @@ func RegisterHook(core *cores.AppContracts) {
         return
     }
 
-    // Adapt Uber Zap to worker Logger
-    logger := worker.NewCustomLogger(
-        func(msg string, args ...any) { zap.S().Debugw(msg, args...) },
-        func(msg string, args ...any) { zap.S().Infow(msg, args...) },
-        func(msg string, args ...any) { zap.S().Warnw(msg, args...) },
-        func(msg string, args ...any) { zap.S().Errorw(msg, args...) },
-    )
+    // 1. Initialize worker engine during BeforeStart
+    core.RegisterBeforeStart(func() error {
+        logger := worker.NewCustomLogger(
+            func(msg string, args ...any) { zap.S().Debugw(msg, args...) },
+            func(msg string, args ...any) { zap.S().Infow(msg, args...) },
+            func(msg string, args ...any) { zap.S().Warnw(msg, args...) },
+            func(msg string, args ...any) { zap.S().Errorw(msg, args...) },
+        )
 
-    // Register before start & on shutdown hooks with one line
-    worker.RegisterStarterHook(core, core.App, worker.Config{
-        MaxWorkers:      cores.Config().Worker.MaxWorkers,     // e.g. from .env
-        SubWorkerLimit:  cores.Config().Worker.SubWorkerLimit,
-        TaskQueueSize:   cores.Config().Worker.QueueCapacity,
-        Logger:          logger,
+        worker.InitGlobal(worker.Config{
+            MaxWorkers:     cores.Config().Worker.MaxWorkers,     // e.g. from .env
+            SubWorkerLimit: cores.Config().Worker.SubWorkerLimit,
+            TaskQueueSize:  cores.Config().Worker.QueueCapacity,
+            Logger:         logger,
+        })
+        return nil
+    })
+
+    // 2. Drain and stop worker engine gracefully on Fiber shutdown
+    core.App.Hooks().OnPostShutdown(func(err error) error {
+        return worker.Shutdown()
     })
 }
 ```
