@@ -31,6 +31,7 @@ Because `fiber-extras` was extracted from real-world production workloads into a
 | [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | `🌱 Alpha (v0.1.0)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
 | [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | `🌱 Alpha (v0.1.0)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
 | [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | `🌱 Alpha (v0.1.0)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
+| [queue-msgpack](v3/queue-msgpack) | `github.com/rachmanzz/fiber-extras/v3/queue-msgpack` | `🌱 Alpha (v0.1.0)` | Pluggable MessagePack payload codec for `v3/queue` (`queue.WithCodec`), working across every adapter. |
 
 ---
 

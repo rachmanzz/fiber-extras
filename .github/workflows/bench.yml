@@ -11,11 +11,13 @@ on:
     paths:
       - "v3/worker/**"
       - "v3/queue/**"
+      - "v3/queue-msgpack/**"
       - ".github/workflows/bench.yml"
   pull_request:
     paths:
       - "v3/worker/**"
       - "v3/queue/**"
+      - "v3/queue-msgpack/**"
       - ".github/workflows/bench.yml"
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [v3/worker, v3/queue]
+        module: [v3/worker, v3/queue, v3/queue-msgpack]
     steps:
       - uses: actions/checkout@v7
 
