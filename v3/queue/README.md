@@ -21,6 +21,7 @@ go get github.com/rachmanzz/fiber-extras/v3/queue-redis     # Redis Priority ZSe
 go get github.com/rachmanzz/fiber-extras/v3/queue-postgres  # PostgreSQL SKIP LOCKED transactional
 go get github.com/rachmanzz/fiber-extras/v3/queue-nats      # NATS JetStream WorkQueue
 go get github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq  # RabbitMQ AMQP 0.9.1
+go get github.com/rachmanzz/fiber-extras/v3/queue-msgpack   # Optional MessagePack payload codec
 ```
 
 ---
@@ -490,6 +491,32 @@ Messages with identical `GroupID` are processed sequentially in `GroupOrder` seq
 queue.Dispatch(ctx, "sync.job", part1, queue.WithGroup("tenant-101", 1))
 queue.Dispatch(ctx, "sync.job", part2, queue.WithGroup("tenant-101", 2))
 ```
+
+---
+
+## 🧩 7. Payload Codecs (JSON / MessagePack)
+
+Payload serialization is pluggable through the `queue.Codec` interface. JSON is the built-in default; any other format can be registered under its own `content-type` and selected per dispatch.
+
+```go
+// Optional MessagePack codec (separate module, zero impact unless imported)
+import queuemsgpack "github.com/rachmanzz/fiber-extras/v3/queue-msgpack"
+
+queue.Dispatch(ctx, "user:welcome_email", payload,
+    queue.WithCodec(queuemsgpack.Codec()), // serialized as MessagePack
+)
+
+// Consumers decode without knowing which codec was used:
+var out WelcomeEmail
+err := queue.Decode(msg, &out) // resolves the codec from the content-type header
+```
+
+- **Codec-agnostic adapters**: the payload boundary is per-message, so every driver (memory, Redis, NATS, RabbitMQ, PostgreSQL) works unchanged.
+- **Header-driven decode**: `queue.Decode` resolves the codec from the `content-type` header, so the consumer process must import the codec package (blank import is fine) or decode explicitly with the codec.
+- **Custom codecs**: implement `queue.Codec` and `queue.RegisterCodec(myCodec)`.
+- **Backward compatible**: messages without a codec default to JSON.
+
+See [`v3/queue-msgpack`](../queue-msgpack) for a complete example.
 
 ---
 

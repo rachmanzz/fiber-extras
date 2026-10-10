@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -143,8 +142,16 @@ func Enqueue(ctx context.Context, msg *Message) error {
 	return d.Enqueue(ctx, msg)
 }
 
-// Dispatch publishes a background queue job with automatic JSON serialization.
+// Dispatch publishes a background queue job, serializing the payload with the
+// selected codec (JSON by default, or the codec provided via WithCodec).
 func Dispatch(ctx context.Context, topic string, payload any, opts ...DispatchOption) error {
+	msg := NewMessage(topic, nil, opts...)
+
+	codec := msg.codec
+	if codec == nil {
+		codec = defaultPayloadCodec()
+	}
+
 	var bytes []byte
 	switch v := payload.(type) {
 	case []byte:
@@ -152,14 +159,22 @@ func Dispatch(ctx context.Context, topic string, payload any, opts ...DispatchOp
 	case string:
 		bytes = []byte(v)
 	default:
-		b, err := json.Marshal(v)
+		b, err := codec.Marshal(v)
 		if err != nil {
 			return fmt.Errorf("queue: failed to marshal payload: %w", err)
 		}
 		bytes = b
+		if msg.codec != nil {
+			if msg.Headers == nil {
+				msg.Headers = make(map[string]string)
+			}
+			if _, exists := msg.Headers[contentTypeHeader]; !exists {
+				msg.Headers[contentTypeHeader] = msg.codec.ContentType()
+			}
+		}
 	}
+	msg.Payload = bytes
 
-	msg := NewMessage(topic, bytes, opts...)
 	err := Enqueue(ctx, msg)
 	if err != nil {
 		globalManager.logger.Error("failed to dispatch queue message", "topic", topic, "error", err)
