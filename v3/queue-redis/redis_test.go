@@ -35,6 +35,20 @@ func TestRedisDriver_ContractAndCapabilities(t *testing.T) {
 		t.Fatalf("expected PrioritySoft, got %v", caps.NativePriority)
 	}
 
+	// B4: Redis dedups by message ID via last-write-wins, so Dedup is genuinely true.
+	if !caps.Dedup {
+		t.Fatal("expected Redis Dedup capability to be true (per-ID last-write-wins)")
+	}
+
+	// KON-3: the inflight lease redelivers unacked messages, so the driver is
+	// crash-persistent and the capability must agree with Guarantee: AtLeastOnce.
+	if !caps.Persistent {
+		t.Fatal("expected Redis Persistent capability to be true (inflight lease redelivers on crash)")
+	}
+	if caps.Guarantee != queue.AtLeastOnce {
+		t.Fatalf("expected AtLeastOnce guarantee, got %v", caps.Guarantee)
+	}
+
 	// Test Ack and Nack with nil tokens do not error
 	ctx := context.Background()
 	if err := driver.Ack(ctx, nil); err != nil {

@@ -60,6 +60,18 @@ func main() {
 
 ---
 
+## 🔒 Reliability (at-least-once)
+
+Redis has no native acknowledgement, so the adapter supplies one: a message popped by `Dequeue` is moved into an **in-flight ZSet** with a **visibility timeout (lease)**. If the consumer crashes without calling `Ack`, the lease expires and the next `Dequeue` reclaims and redelivers the message. `Ack` removes both the payload and the in-flight entry; `Nack` requeues it atomically.
+
+```go
+adapter := queueredis.New(rdb, queueredis.WithVisibilityTimeout(1*time.Minute))
+```
+
+The default lease is `DefaultVisibilityTimeout` (30 seconds). Keep it comfortably above your expected processing time to avoid duplicate deliveries; delivery is at-least-once, so handlers should be idempotent.
+
+---
+
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
