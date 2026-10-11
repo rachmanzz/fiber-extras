@@ -75,3 +75,24 @@ The default lease is `DefaultVisibilityTimeout` (30 seconds). Keep it comfortabl
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+
+---
+
+## 📦 Wire format (split transport)
+
+The Redis record is split so the payload never passes through a text
+encoding (no base64 tax) — and there is exactly **one** wire format:
+
+```
+hash <prefix>messages_hash:
+  <id>:p   ->  payload bytes (raw, zero-copy)
+  <id>:m   ->  metadata (msgpack: id, topic, priority, group, headers, ...)
+```
+
+Metadata is msgpack-encoded, so header values stay binary-safe (e.g. a poison
+message's `raw_payload` round-trips losslessly). There is no legacy format and
+no version negotiation: a record that is missing or cannot be decoded is
+surfaced as a **poison delivery** (routed to the DLQ) instead of being guessed.
+
+> Deploy note: because old-format records are not decoded, drain the queue (or
+> stop producers) while upgrading from a release that wrote the old envelope.

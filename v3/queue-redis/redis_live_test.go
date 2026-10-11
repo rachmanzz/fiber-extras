@@ -458,13 +458,13 @@ func TestRedisDriver_Live_UndecodablePayloadBecomesPoison(t *testing.T) {
 		_ = client.Del(cctx, prefix+"priority_zset", prefix+"messages_hash", prefix+"delayed_zset", prefix+"inflight_zset", prefix+"inflight_scores").Err()
 	})
 
-	// Case 1: payload exists but is corrupt JSON.
+	// Case 1a: v2 record present but its metadata field is corrupt.
 	corrupt := newLiveMsg("audit.corrupt", queue.PriorityDefault)
 	if err := driver.Enqueue(ctx, corrupt); err != nil {
 		t.Fatalf("queue-redis: enqueue failed: %v", err)
 	}
-	if err := client.HSet(ctx, prefix+"messages_hash", corrupt.ID, "this is not json").Err(); err != nil {
-		t.Fatalf("queue-redis: corrupting hash entry failed: %v", err)
+	if err := client.HSet(ctx, prefix+"messages_hash", corrupt.ID+":m", "this is not msgpack").Err(); err != nil {
+		t.Fatalf("queue-redis: corrupting metadata field failed: %v", err)
 	}
 
 	batch, err := driver.Dequeue(ctx, queue.DequeueRequest{BatchSize: 10})
@@ -488,12 +488,12 @@ func TestRedisDriver_Live_UndecodablePayloadBecomesPoison(t *testing.T) {
 		t.Fatalf("queue-redis: expected decode_adapter=%q, got %q", driver.Name(), got.Headers["decode_adapter"])
 	}
 
-	// Case 2: hash entry vanished but the ZSet member is still present.
+	// Case 2: the split record vanished but the ZSet member remains.
 	missing := newLiveMsg("audit.missing", queue.PriorityDefault)
 	if err := driver.Enqueue(ctx, missing); err != nil {
 		t.Fatalf("queue-redis: enqueue failed: %v", err)
 	}
-	if err := client.HDel(ctx, prefix+"messages_hash", missing.ID).Err(); err != nil {
+	if err := client.HDel(ctx, prefix+"messages_hash", missing.ID+":p", missing.ID+":m").Err(); err != nil {
 		t.Fatalf("queue-redis: deleting hash entry failed: %v", err)
 	}
 

@@ -2,12 +2,12 @@ package queueredis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/rachmanzz/fiber-extras/v3/queue"
 	"github.com/redis/go-redis/v9"
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // DefaultPrefix is the default key prefix for Redis queue data structures.
@@ -17,6 +17,82 @@ const DefaultPrefix = "fiber:queue:"
 // A delivered message stays in-flight until Ack/Nack; if the consumer crashes
 // and the lease expires, the next Dequeue redelivers it (at-least-once).
 const DefaultVisibilityTimeout = 30 * time.Second
+
+// Wire format (split transport): the message hash stores the user payload as
+// raw bytes under "<id>:p" and the adapter metadata msgpack-encoded under
+// "<id>:m". The payload never passes through any text encoding, so no base64
+// tax applies. This is the only wire format: a record that is missing or
+// cannot be decoded surfaces as a poison delivery instead of being guessed.
+const (
+	payloadFieldSuffix = ":p"
+	metaFieldSuffix    = ":m"
+)
+
+func payloadField(id string) string { return id + payloadFieldSuffix }
+
+func metaField(id string) string { return id + metaFieldSuffix }
+
+// wireMeta is the v2 adapter-side metadata envelope. It is msgpack-encoded so
+// metadata values stay binary-safe: header values (e.g. a poison message's
+// raw_payload) round-trip losslessly, unlike the v1 JSON envelope which
+// replaces invalid UTF-8.
+type wireMeta struct {
+	ID          string
+	Topic       string
+	Priority    queue.Priority
+	GroupID     string
+	GroupOrder  int
+	Headers     map[string]string
+	CreatedAt   time.Time
+	Attempt     int
+	MaxAttempts int
+	Driver      string
+}
+
+func metaFromMessage(msg *queue.Message) wireMeta {
+	return wireMeta{
+		ID:          msg.ID,
+		Topic:       msg.Topic,
+		Priority:    msg.Priority,
+		GroupID:     msg.GroupID,
+		GroupOrder:  msg.GroupOrder,
+		Headers:     msg.Headers,
+		CreatedAt:   msg.CreatedAt,
+		Attempt:     msg.Attempt,
+		MaxAttempts: msg.MaxAttempts,
+		Driver:      msg.Driver,
+	}
+}
+
+func (m wireMeta) toMessage(payload []byte) *queue.Message {
+	return &queue.Message{
+		ID:          m.ID,
+		Topic:       m.Topic,
+		Payload:     payload,
+		Priority:    m.Priority,
+		GroupID:     m.GroupID,
+		GroupOrder:  m.GroupOrder,
+		Headers:     m.Headers,
+		CreatedAt:   m.CreatedAt,
+		Attempt:     m.Attempt,
+		MaxAttempts: m.MaxAttempts,
+		Driver:      m.Driver,
+	}
+}
+
+// encodeMeta serializes the v2 metadata; the payload itself is not touched
+// (it is stored raw under its own hash field, zero-copy).
+func encodeMeta(msg *queue.Message) ([]byte, error) {
+	return msgpack.Marshal(metaFromMessage(msg))
+}
+
+func decodeMeta(b []byte) (wireMeta, error) {
+	var m wireMeta
+	if err := msgpack.Unmarshal(b, &m); err != nil {
+		return wireMeta{}, err
+	}
+	return m, nil
+}
 
 // RedisDriver implements queue.Adapter (and queue.DelayedEnqueuer) using Redis Sorted Sets and Hashes.
 type RedisDriver struct {
@@ -154,6 +230,29 @@ redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
 return 1
 `)
 
+// migrateDelayedScript atomically migrates matured delayed members to the
+// ready ZSet. For each (member, score) argument it first ZREMs the member from
+// the delayed set and only ZADDs it to the ready set when that removal actually
+// happened. This makes concurrent migrations safe: when two Dequeue calls both
+// observe the same matured member, exactly one of them removes it (ZREM
+// returns 1) and therefore exactly one copy ever reaches the ready set. The
+// previous two-step implementation (ZRangeByScore -> TxPipeline ZRem+ZAdd)
+// allowed a second, overlapping migration to re-add a member that had already
+// been popped, delivered and Acked -- whose hash entry was then already gone
+// -- producing a duplicate delivery followed by a poison "missing payload".
+var migrateDelayedScript = redis.NewScript(`
+local out = {}
+for i = 1, #ARGV, 2 do
+  local member = ARGV[i]
+  local score = ARGV[i+1]
+  if redis.call('ZREM', KEYS[1], member) == 1 then
+    redis.call('ZADD', KEYS[2], score, member)
+    out[#out+1] = member
+  end
+end
+return out
+`)
+
 // reclaimExpiredScript atomically returns every expired in-flight member to the
 // ready ZSet, restoring its original score when known. Because the ZRem and the
 // ZAdd happen in one script, a consumer crash cannot lose a message between the
@@ -192,45 +291,41 @@ func (r *RedisDriver) reclaimExpired(ctx context.Context, nowScore float64) erro
 	return err
 }
 
-// Enqueue serializes and pushes a message into the Redis priority ZSet and message hash.
-func (r *RedisDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
-	raw, err := json.Marshal(msg)
+// enqueue writes the v2 split record (raw payload + msgpack metadata) into the
+// message hash and adds the message to the given ZSet with the given score.
+func (r *RedisDriver) enqueue(ctx context.Context, msg *queue.Message, key string, score float64) error {
+	meta, err := encodeMeta(msg)
 	if err != nil {
-		return fmt.Errorf("queue-redis: failed to marshal message: %w", err)
+		return fmt.Errorf("queue-redis: failed to encode metadata: %w", err)
+	}
+	payload := msg.Payload
+	if payload == nil {
+		payload = []byte{}
 	}
 
-	// Score is Priority (higher priority = higher score).
-	// Sub-score tie-breaker: timestamp unix seconds deducted
-	score := float64(msg.Priority)*1e9 - float64(msg.CreatedAt.Unix())
-
 	pipe := r.client.Pipeline()
-	pipe.HSet(ctx, r.dataKey(), msg.ID, raw)
-	pipe.ZAdd(ctx, r.queueKey(), redis.Z{
-		Score:  score,
-		Member: msg.ID,
-	})
+	pipe.HSet(ctx, r.dataKey(),
+		payloadField(msg.ID), payload,
+		metaField(msg.ID), meta,
+	)
+	pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: msg.ID})
 	_, err = pipe.Exec(ctx)
 	return err
 }
 
+// Enqueue serializes and pushes a message into the Redis priority ZSet and message hash.
+func (r *RedisDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
+	// Score is Priority (higher priority = higher score).
+	// Sub-score tie-breaker: timestamp unix seconds deducted
+	score := float64(msg.Priority)*1e9 - float64(msg.CreatedAt.Unix())
+	return r.enqueue(ctx, msg, r.queueKey(), score)
+}
+
 // EnqueueAt schedules a message to become active at a specific future timestamp.
 func (r *RedisDriver) EnqueueAt(ctx context.Context, msg *queue.Message, at time.Time) error {
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("queue-redis: failed to marshal message: %w", err)
-	}
-
 	// In delayed ZSet, score is unix timestamp with fractional seconds
 	score := float64(at.UnixNano()) / 1e9
-
-	pipe := r.client.Pipeline()
-	pipe.HSet(ctx, r.dataKey(), msg.ID, raw)
-	pipe.ZAdd(ctx, r.delayedKey(), redis.Z{
-		Score:  score,
-		Member: msg.ID,
-	})
-	_, err = pipe.Exec(ctx)
-	return err
+	return r.enqueue(ctx, msg, r.delayedKey(), score)
 }
 
 // Dequeue pops the highest-priority messages from Redis, migrating matured delayed messages first.
@@ -257,26 +352,34 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 	}
 
 	if len(delayedMembers) > 0 {
-		raws, err := r.client.HMGet(ctx, r.dataKey(), delayedMembers...).Result()
+		// Read each message's msgpack metadata to preserve its original
+		// priority during migration.
+		fields := make([]string, 0, len(delayedMembers))
+		for _, mID := range delayedMembers {
+			fields = append(fields, metaField(mID))
+		}
+		raws, err := r.client.HMGet(ctx, r.dataKey(), fields...).Result()
 		if err != nil && err != redis.Nil {
 			return nil, err
 		}
-		tx := r.client.TxPipeline()
+		args := make([]interface{}, 0, len(delayedMembers)*2)
 		for i, mID := range delayedMembers {
 			score := float64(queue.PriorityDefault)*1e9 - nowScore
-			if i < len(raws) && raws[i] != nil {
-				var msg queue.Message
-				if err := json.Unmarshal(rawValue(raws[i]), &msg); err == nil {
-					score = float64(msg.Priority)*1e9 - float64(msg.CreatedAt.Unix())
+			if i < len(raws) {
+				if metaRaw := rawValue(raws[i]); metaRaw != nil {
+					if meta, err := decodeMeta(metaRaw); err == nil {
+						score = float64(meta.Priority)*1e9 - float64(meta.CreatedAt.Unix())
+					}
 				}
 			}
-			tx.ZRem(ctx, r.delayedKey(), mID)
-			tx.ZAdd(ctx, r.queueKey(), redis.Z{
-				Score:  score,
-				Member: mID,
-			})
+			args = append(args, mID, fmt.Sprintf("%f", score))
 		}
-		if _, err := tx.Exec(ctx); err != nil {
+		// The migration is conditional on the ZREM (see migrateDelayedScript):
+		// an overlapping migration that lost the race contributes nothing, so
+		// a member can never be re-added to the ready set after it was
+		// already delivered and Acked.
+		if _, err := migrateDelayedScript.Run(ctx, r.client,
+			[]string{r.delayedKey(), r.queueKey()}, args...).Result(); err != nil {
 			return nil, err
 		}
 	}
@@ -312,42 +415,42 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		return nil, nil
 	}
 
-	rawItems, err := r.client.HMGet(ctx, r.dataKey(), msgIDs...).Result()
+	// Fetch the split record for each popped ID: "<id>:p" (raw payload) and
+	// "<id>:m" (msgpack metadata).
+	fields := make([]string, 0, len(msgIDs)*2)
+	for _, id := range msgIDs {
+		fields = append(fields, payloadField(id), metaField(id))
+	}
+	rawItems, err := r.client.HMGet(ctx, r.dataKey(), fields...).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	deliveries := make([]*queue.Delivery, 0, len(rawItems))
-	for i, raw := range rawItems {
-		msgID := ""
-		if i < len(msgIDs) {
-			msgID = msgIDs[i]
-		}
-		if raw == nil {
-			// Hash entry is missing while the ZSet member was already popped:
-			// the payload is unrecoverable. Surface a poison delivery so the
-			// consumer routes the loss to the DLQ instead of silently dropping it.
+	deliveries := make([]*queue.Delivery, 0, len(msgIDs))
+	for i, msgID := range msgIDs {
+		v2Payload := rawValue(rawItems[i*2])
+		v2Meta := rawValue(rawItems[i*2+1])
+		if v2Payload == nil || v2Meta == nil {
+			// The split record is incomplete while the ZSet member was already
+			// popped: the payload is unrecoverable. Surface a poison delivery
+			// so the consumer routes the loss to the DLQ instead of silently
+			// dropping it.
 			deliveries = append(deliveries, &queue.Delivery{
 				Message: queue.NewPoisonMessage(msgID, nil, fmt.Errorf("queue-redis: missing payload for message id %q", msgID), r.Name()),
 				Token:   msgID,
 			})
 			continue
 		}
-		var msg queue.Message
-		str := rawValue(raw)
-		if err := json.Unmarshal(str, &msg); err != nil {
-			// Corrupt payload: the ZSet member is already gone, so surface a
-			// poison delivery instead of dropping the corrupt message silently.
+		meta, err := decodeMeta(v2Meta)
+		if err != nil {
 			deliveries = append(deliveries, &queue.Delivery{
-				Message: queue.NewPoisonMessage(msgID, str, err, r.Name()),
+				Message: queue.NewPoisonMessage(msgID, v2Payload, fmt.Errorf("queue-redis: corrupt metadata: %w", err), r.Name()),
 				Token:   msgID,
 			})
 			continue
 		}
-		deliveries = append(deliveries, &queue.Delivery{
-			Message: &msg,
-			Token:   msg.ID,
-		})
+		msg := meta.toMessage(v2Payload)
+		deliveries = append(deliveries, &queue.Delivery{Message: msg, Token: msg.ID})
 	}
 
 	return deliveries, nil
@@ -386,7 +489,7 @@ func (r *RedisDriver) Ack(ctx context.Context, d *queue.Delivery) error {
 		return fmt.Errorf("queue-redis: invalid delivery token type: %T", d.Token)
 	}
 	pipe := r.client.Pipeline()
-	pipe.HDel(ctx, r.dataKey(), msgID)
+	pipe.HDel(ctx, r.dataKey(), payloadField(msgID), metaField(msgID))
 	pipe.ZRem(ctx, r.inflightKey(), msgID)
 	pipe.HDel(ctx, r.inflightScoreKey(), msgID)
 	_, err := pipe.Exec(ctx)

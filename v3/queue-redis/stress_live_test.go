@@ -3,6 +3,7 @@
 package queueredis_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -366,6 +367,125 @@ func TestStress_Redis_DelayedMigrationConcurrent(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	sink.fatalIfAny(t)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assertExactlyOnceSettled(t, expected, settled, seen)
+}
+
+// TestStress_Redis_DelayedMigrationConcurrentAcks reproduces the race where
+// two concurrent Dequeue calls both observe the same matured delayed member:
+// a delayed message that is migrated, delivered and Acked must never be
+// re-added to the ready set by an overlapping migration (which would produce
+// a duplicate delivery followed by a poison "missing payload"). Messages are
+// written exclusively in the split wire format.
+func TestStress_Redis_DelayedMigrationConcurrentAcks(t *testing.T) {
+	const (
+		readyTotal   = 600
+		delayedTotal = 200
+		total        = readyTotal + delayedTotal
+	)
+	driver, _, _ := newStressDriver(t, 60*time.Second)
+	ctx := context.Background()
+	sink := &stressErr{}
+
+	payload := make([]byte, 512)
+	for i := range payload {
+		payload[i] = byte(i*7 + 3)
+	}
+
+	var (
+		mu       sync.Mutex
+		expected = make(map[string]struct{}, total)
+		seen     = make(map[string]int, total)
+		settled  = make(map[string]int, total)
+	)
+	var settledN int64
+
+	var wg sync.WaitGroup
+	for p := 0; p < 4; p++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < readyTotal/4; j++ {
+				m := queue.NewMessage("redis.split.ready", payload)
+				mu.Lock()
+				expected[m.ID] = struct{}{}
+				mu.Unlock()
+				if err := driver.Enqueue(ctx, m); err != nil {
+					sink.add(fmt.Errorf("enqueue %s: %w", m.ID, err))
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < delayedTotal; j++ {
+			m := queue.NewMessage("redis.split.delayed", payload)
+			mu.Lock()
+			expected[m.ID] = struct{}{}
+			mu.Unlock()
+			if err := driver.EnqueueAt(ctx, m, time.Now().Add(50*time.Millisecond)); err != nil {
+				sink.add(fmt.Errorf("enqueueAt %s: %w", m.ID, err))
+				return
+			}
+		}
+	}()
+
+	stop := make(chan struct{})
+	for c := 0; c < 4; c++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				ds, err := driver.Dequeue(ctx, queue.DequeueRequest{BatchSize: 64})
+				if err != nil {
+					sink.add(fmt.Errorf("dequeue: %w", err))
+					return
+				}
+				for _, d := range ds {
+					mu.Lock()
+					seen[d.Message.ID]++
+					mu.Unlock()
+					if !bytes.Equal(d.Message.Payload, payload) {
+						sink.add(fmt.Errorf("payload corrupted for %s: topic=%q gotLen=%d wantLen=%d",
+							d.Message.ID, d.Message.Topic, len(d.Message.Payload), len(payload)))
+						continue
+					}
+					if err := driver.Ack(ctx, d); err != nil {
+						sink.add(fmt.Errorf("ack %s: %w", d.Message.ID, err))
+						continue
+					}
+					mu.Lock()
+					settled[d.Message.ID]++
+					mu.Unlock()
+					atomic.AddInt64(&settledN, 1)
+				}
+				if len(ds) == 0 {
+					time.Sleep(2 * time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	deadline := time.Now().Add(90 * time.Second)
+	for atomic.LoadInt64(&settledN) < total {
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout: only %d/%d deliveries settled", atomic.LoadInt64(&settledN), total)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(stop)
+	wg.Wait()
 	sink.fatalIfAny(t)
 
 	mu.Lock()
