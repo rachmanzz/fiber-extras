@@ -1,4 +1,4 @@
-# Core modules: v3/worker + v3/queue + v3/queue-msgpack (pure Go, no broker required).
+# Core modules: v3/worker + v3/queue + v3/queue-msgpack + v3/cron (pure Go, no broker required).
 name: core
 
 on:
@@ -9,6 +9,7 @@ on:
       - "v3/worker/**"
       - "v3/queue/**"
       - "v3/queue-msgpack/**"
+      - "v3/cron/**"
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/core.yml"
@@ -17,6 +18,7 @@ on:
       - "v3/worker/**"
       - "v3/queue/**"
       - "v3/queue-msgpack/**"
+      - "v3/cron/**"
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/core.yml"
@@ -36,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [v3/worker, v3/queue, v3/queue-msgpack]
+        module: [v3/worker, v3/queue, v3/queue-msgpack, v3/cron]
     steps:
       - uses: actions/checkout@v7
 

@@ -8,6 +8,7 @@ use (
 	./v3/queue-rabbitmq
 	./v3/queue-postgres
 	./v3/queue-msgpack
+	./v3/cron
 )
 
 
