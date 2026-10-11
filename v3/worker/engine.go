@@ -32,6 +32,7 @@ type Engine struct {
 	subLimit  int
 	wg        sync.WaitGroup
 	quit      chan struct{}
+	started   bool
 	closed    bool
 	closedMu  sync.RWMutex
 	logger    Logger
@@ -79,13 +80,17 @@ func New(opts ...Option) *Engine {
 }
 
 // Start launches worker goroutines to process incoming tasks from the queue.
+// It is idempotent: calling Start more than once (concurrently or otherwise)
+// launches the worker set only once, so a second call cannot double the number
+// of consumers draining the task queue.
 func (e *Engine) Start() *Engine {
-	e.closedMu.RLock()
-	if e.closed {
-		e.closedMu.RUnlock()
+	e.closedMu.Lock()
+	if e.closed || e.started {
+		e.closedMu.Unlock()
 		return e
 	}
-	e.closedMu.RUnlock()
+	e.started = true
+	e.closedMu.Unlock()
 
 	for i := 0; i < e.cfg.MaxWorkers; i++ {
 		e.wg.Add(1)
@@ -136,6 +141,16 @@ func (e *Engine) runTask(ctx context.Context, task Task, workerID int) {
 	}()
 
 	err := task.Execute(ctx, subPool)
+
+	// Join any sub-workers the task spawned. A task that forgets to call
+	// pool.Wait() would otherwise let the engine mark the task complete (and
+	// free its worker) while sub-worker work is still in flight. Joining here
+	// guarantees the engine never sees a task as done with live sub-workers and
+	// surfaces an error the task failed to propagate.
+	if waitErr := subPool.Wait(); waitErr != nil && err == nil {
+		err = waitErr
+	}
+
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -184,7 +199,28 @@ func (e *Engine) ExecuteSync(ctx context.Context, task Task) error {
 	}
 
 	subPool := newSubWorkerPool(ctx, e.subLimit, task.Name(), e.logger)
-	return task.Execute(ctx, subPool)
+
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				e.logger.Error("sync task recovered from panic",
+					"task", task.Name(),
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+				err = fmt.Errorf("worker: task %q panicked: %v", task.Name(), r)
+			}
+		}()
+		err = task.Execute(ctx, subPool)
+	}()
+
+	// Mirror runTask: join sub-workers even if the task did not call Wait().
+	if waitErr := subPool.Wait(); waitErr != nil && err == nil {
+		err = waitErr
+	}
+
+	return err
 }
 
 // Shutdown gracefully stops the worker engine, allowing active workers up to ShutdownTimeout to finish.
@@ -236,13 +272,22 @@ func InitGlobal(cfg ...Config) *Engine {
 // If not yet initialized, it lazily initializes an engine with DefaultConfig.
 func GetDispatcher() Dispatcher {
 	globalEngineMu.RLock()
-	defer globalEngineMu.RUnlock()
+	if globalEngine != nil {
+		defer globalEngineMu.RUnlock()
+		return globalEngine
+	}
+	globalEngineMu.RUnlock()
+
+	// Upgrade to a write lock and re-check: two concurrent callers may both
+	// observe nil, but only the first must create the engine, otherwise the
+	// engine of the loser leaks (its worker goroutines keep running).
+	globalEngineMu.Lock()
+	defer globalEngineMu.Unlock()
 
 	if globalEngine == nil {
-		globalEngineMu.RUnlock()
-		engine := InitGlobal()
-		globalEngineMu.RLock()
-		return engine
+		engine := NewEngine(DefaultConfig())
+		engine.Start()
+		globalEngine = engine
 	}
 	return globalEngine
 }

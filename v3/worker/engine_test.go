@@ -159,6 +159,94 @@ func TestEngine_PanicRecovery_MainTask(t *testing.T) {
 	}
 }
 
+// TestEngine_ExecuteSyncJoinsForgottenSubWorkers guards M-W2/M-W3: a task that
+// spawns sub-workers but forgets to call pool.Wait() must still be joined by the
+// engine before ExecuteSync returns.
+func TestEngine_ExecuteSyncJoinsForgottenSubWorkers(t *testing.T) {
+	engine := worker.New(worker.WithLogger(worker.NopLogger()))
+	defer func() { _ = engine.Shutdown() }()
+
+	var subDone atomic.Bool
+	task := worker.NewTaskFunc("sync:no-wait", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		pool.Go(func(subCtx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			subDone.Store(true)
+			return nil
+		})
+		return nil // deliberately forgets pool.Wait()
+	})
+
+	if err := engine.ExecuteSync(context.Background(), task); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !subDone.Load() {
+		t.Fatal("ExecuteSync returned before the forgotten sub-worker completed")
+	}
+}
+
+// TestEngine_ExecuteSyncPropagatesForgottenSubWorkerError ensures the engine
+// surfaces an error from a sub-worker even when the task did not call Wait().
+func TestEngine_ExecuteSyncPropagatesForgottenSubWorkerError(t *testing.T) {
+	engine := worker.New(worker.WithLogger(worker.NopLogger()))
+	defer func() { _ = engine.Shutdown() }()
+
+	wantErr := errors.New("forgotten sub-worker failure")
+	task := worker.NewTaskFunc("sync:no-wait-err", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		pool.Go(func(subCtx context.Context) error { return wantErr })
+		return nil // deliberately forgets pool.Wait()
+	})
+
+	if err := engine.ExecuteSync(context.Background(), task); !errors.Is(err, wantErr) {
+		t.Fatalf("expected error %v, got %v", wantErr, err)
+	}
+}
+
+// TestEngine_RunTaskJoinsSubWorkers guards the dispatched path (runTask): the
+// next queued task must only start after the previous task's sub-workers finish.
+func TestEngine_RunTaskJoinsSubWorkers(t *testing.T) {
+	cfg := worker.Config{
+		MaxWorkers:      1,
+		SubWorkerLimit:  4,
+		TaskQueueSize:   4,
+		ShutdownTimeout: 5 * time.Second,
+		Logger:          worker.NopLogger(),
+	}
+	engine := worker.NewEngine(cfg).Start()
+	defer func() { _ = engine.Shutdown() }()
+
+	var subDone atomic.Bool
+	taskA := worker.NewTaskFunc("run:no-wait", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		pool.Go(func(subCtx context.Context) error {
+			time.Sleep(50 * time.Millisecond)
+			subDone.Store(true)
+			return nil
+		})
+		return nil // deliberately forgets pool.Wait()
+	})
+
+	second := make(chan struct{})
+	taskB := worker.NewTaskFunc("run:after", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		close(second)
+		return nil
+	})
+
+	if err := engine.Dispatch(context.Background(), taskA); err != nil {
+		t.Fatalf("dispatch taskA: %v", err)
+	}
+	if err := engine.Dispatch(context.Background(), taskB); err != nil {
+		t.Fatalf("dispatch taskB: %v", err)
+	}
+
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for second task")
+	}
+	if !subDone.Load() {
+		t.Fatal("second task started before the first task's sub-workers completed")
+	}
+}
+
 func TestEngine_QueueCapacity_ErrQueueFull(t *testing.T) {
 	// Create engine with queue size 1 and unstarted (workers don't consume)
 	cfg := worker.Config{
