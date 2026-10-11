@@ -4,6 +4,25 @@
 
 Transactional PostgreSQL adapter for [`v3/queue`](../queue) utilizing the `SELECT ... FOR UPDATE SKIP LOCKED` pattern, ideal for transactional outbox queueing without requiring extra broker infrastructure.
 
+## Reliability
+
+In-flight messages are guarded by a **visibility timeout (lease)**. A message claimed by a worker is invisible to other consumers while its lease is active; if the worker crashes without acknowledging, the lease expires and the message is **redelivered automatically** — no message is ever stuck in-flight. Configure the lease when constructing the driver:
+
+```go
+adapter := queuepostgres.New(pool, queuepostgres.WithVisibilityTimeout(5*time.Minute))
+```
+
+The default lease is `DefaultVisibilityTimeout` (3 minutes). On `Ack` the row is **soft-deleted** (`status = 'acked'`) so `Replay` can still surface processed messages for auditing/recovery; the row is only physically removed by `PurgeAcked`. On `Nack` the delivery is released back to `pending` immediately.
+
+### Replay & retention
+
+`Replay(ctx, from)` streams every message created since `from` — including completed (acked) rows — ordered by `created_at`. Because acked rows are retained, run `PurgeAcked` periodically to reclaim storage:
+
+```go
+// Drop completed rows acked more than 24h ago.
+_, _ = adapter.PurgeAcked(ctx, time.Now().Add(-24*time.Hour))
+```
+
 ---
 
 ## 📦 Installation
