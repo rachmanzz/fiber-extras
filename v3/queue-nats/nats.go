@@ -2,9 +2,9 @@ package queuenats
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -204,6 +204,123 @@ func (n *NATSAdapter) Capabilities() queue.Capabilities {
 	}
 }
 
+// Wire format v2 (split transport): the JetStream message body carries the
+// user payload as raw bytes and all adapter metadata travels in NATS headers
+// under reserved "fiber-*" keys (user headers get the "fiber-h-" prefix so
+// they can never collide with reserved metadata). The payload never passes
+// through a text encoding, so the base64 tax of the v1 JSON envelope is gone.
+// Format v1 (a single JSON envelope in the body) is still decoded for
+// messages written by older producers (rolling deploys).
+const (
+	hdrEnvelope   = "fiber-envelope"
+	hdrID         = "fiber-id"
+	hdrTopic      = "fiber-topic"
+	hdrPriority   = "fiber-priority"
+	hdrCreatedAt  = "fiber-created-at"
+	hdrAttempt    = "fiber-attempt"
+	hdrMaxAttempt = "fiber-max-attempts"
+	hdrGroupID    = "fiber-group-id"
+	hdrGroupOrder = "fiber-group-order"
+	hdrDriver     = "fiber-driver"
+	hdrUserPrefix = "fiber-h-"
+)
+
+// wireVersion marks messages that use the v2 split transport.
+const wireVersion = "2"
+
+// buildNATSMsg renders a queue.Message as a v2 split-transport nats.Msg:
+// raw payload in Data, metadata in reserved headers. The payload is passed
+// through zero-copy.
+func buildNATSMsg(subject string, msg *queue.Message) *nats.Msg {
+	m := &nats.Msg{
+		Subject: subject,
+		Data:    msg.Payload,
+		Header:  nats.Header{},
+	}
+	m.Header.Set("Nats-Msg-Id", msg.ID)
+	m.Header.Set(hdrEnvelope, wireVersion)
+	m.Header.Set(hdrID, msg.ID)
+	m.Header.Set(hdrTopic, msg.Topic)
+	m.Header.Set(hdrPriority, strconv.Itoa(int(msg.Priority)))
+	m.Header.Set(hdrCreatedAt, msg.CreatedAt.UTC().Format(time.RFC3339Nano))
+	m.Header.Set(hdrAttempt, strconv.Itoa(msg.Attempt))
+	m.Header.Set(hdrMaxAttempt, strconv.Itoa(msg.MaxAttempts))
+	if msg.GroupID != "" {
+		m.Header.Set(hdrGroupID, msg.GroupID)
+	}
+	if msg.GroupOrder != 0 {
+		m.Header.Set(hdrGroupOrder, strconv.Itoa(msg.GroupOrder))
+	}
+	if msg.Driver != "" {
+		m.Header.Set(hdrDriver, msg.Driver)
+	}
+	for k, v := range msg.Headers {
+		m.Header.Set(hdrUserPrefix+k, v)
+	}
+	return m
+}
+
+// decodeNATSMsg rebuilds a queue.Message from a v2 split-transport nats.Msg.
+// Corrupt or missing reserved metadata yields an error (surfaced as a poison
+// delivery by the caller).
+func decodeNATSMsg(rawMsg *nats.Msg) (*queue.Message, error) {
+	if rawMsg.Header.Get(hdrEnvelope) != wireVersion {
+		return nil, fmt.Errorf("missing v2 envelope marker")
+	}
+	id := rawMsg.Header.Get(hdrID)
+	if id == "" {
+		return nil, fmt.Errorf("missing %s header", hdrID)
+	}
+	topic := rawMsg.Header.Get(hdrTopic)
+	if topic == "" {
+		return nil, fmt.Errorf("missing %s header", hdrTopic)
+	}
+	priority, err := strconv.Atoi(rawMsg.Header.Get(hdrPriority))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", hdrPriority, err)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, rawMsg.Header.Get(hdrCreatedAt))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", hdrCreatedAt, err)
+	}
+	attempt, err := strconv.Atoi(rawMsg.Header.Get(hdrAttempt))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", hdrAttempt, err)
+	}
+	maxAttempts, err := strconv.Atoi(rawMsg.Header.Get(hdrMaxAttempt))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", hdrMaxAttempt, err)
+	}
+	groupOrder := 0
+	if rawMsg.Header.Get(hdrGroupOrder) != "" {
+		if groupOrder, err = strconv.Atoi(rawMsg.Header.Get(hdrGroupOrder)); err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", hdrGroupOrder, err)
+		}
+	}
+
+	headers := make(map[string]string)
+	for k, vs := range rawMsg.Header {
+		if len(k) <= len(hdrUserPrefix) || !strings.HasPrefix(k, hdrUserPrefix) || len(vs) == 0 {
+			continue
+		}
+		headers[k[len(hdrUserPrefix):]] = vs[0]
+	}
+
+	return &queue.Message{
+		ID:          id,
+		Topic:       topic,
+		Payload:     rawMsg.Data,
+		Priority:    queue.Priority(priority),
+		GroupID:     rawMsg.Header.Get(hdrGroupID),
+		GroupOrder:  groupOrder,
+		Headers:     headers,
+		CreatedAt:   createdAt,
+		Attempt:     attempt,
+		MaxAttempts: maxAttempts,
+		Driver:      rawMsg.Header.Get(hdrDriver),
+	}, nil
+}
+
 func (n *NATSAdapter) subjectFor(msg *queue.Message) string {
 	prioStr := "default"
 	switch {
@@ -237,23 +354,7 @@ func (n *NATSAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
 	}
 	n.mu.RUnlock()
 
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("queue-nats: failed to marshal message: %w", err)
-	}
-
-	natsMsg := &nats.Msg{
-		Subject: n.subjectFor(msg),
-		Data:    raw,
-		Header:  nats.Header{},
-	}
-	natsMsg.Header.Set("Nats-Msg-Id", msg.ID)
-
-	for k, v := range msg.Headers {
-		natsMsg.Header.Set(k, v)
-	}
-
-	_, err = n.js.PublishMsg(natsMsg)
+	_, err := n.js.PublishMsg(buildNATSMsg(n.subjectFor(msg), msg))
 	return err
 }
 
@@ -289,11 +390,12 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		}
 
 		for _, rawMsg := range msgs {
-			var m queue.Message
-			if err := json.Unmarshal(rawMsg.Data, &m); err != nil {
-				// Publish a poison copy before terminating the undecodable
-				// original: if this fails the original stays unacked and is
-				// redelivered by JetStream instead of being silently lost.
+			m, err := decodeNATSMsg(rawMsg)
+			if err != nil {
+				// Undecodable or non-split-transport record: publish a poison
+				// copy before terminating the original -- if this fails the
+				// original stays unacked and is redelivered by JetStream
+				// instead of being silently lost.
 				poisonID := rawMsg.Header.Get("Nats-Msg-Id")
 				if poisonID == "" {
 					poisonID = queue.NewUUID()
@@ -307,7 +409,7 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 			}
 
 			deliveries = append(deliveries, &queue.Delivery{
-				Message: &m,
+				Message: m,
 				Token:   rawMsg,
 			})
 		}

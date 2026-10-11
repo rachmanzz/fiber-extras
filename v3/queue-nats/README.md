@@ -66,3 +66,20 @@ TEST_NATS_URL=nats://127.0.0.1:4222 go test ./...
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+
+---
+
+## 📦 Wire format (split transport)
+
+The JetStream message body is the **raw payload** and all metadata travels in
+NATS headers under reserved `fiber-*` keys (`fiber-id`, `fiber-topic`,
+`fiber-priority`, `fiber-created-at`, `fiber-attempt`, `fiber-max-attempts`,
+`fiber-group-id`, `fiber-group-order`, `fiber-driver`); user headers are
+prefixed `fiber-h-` so they can never collide with the reserved keys. There is
+exactly **one** wire format and no version negotiation: a record that is
+missing its envelope marker or cannot be decoded is surfaced as a **poison
+delivery** (routed to the DLQ) instead of being guessed.
+
+> Deploy note: because old-envelope records are not decoded, drain the stream
+> (or stop producers) while upgrading from a release that wrote the old
+> envelope.
