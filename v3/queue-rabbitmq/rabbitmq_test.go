@@ -38,3 +38,12 @@ func TestRabbitMQAdapter_CapabilityConsistency(t *testing.T) {
 		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
 	}
 }
+
+// TestRabbitMQAdapter_DedupCapabilityReflectsReality guards B4: RabbitMQ has no
+// deduplication mechanism, so the capability must be declared false.
+func TestRabbitMQAdapter_DedupCapabilityReflectsReality(t *testing.T) {
+	adapter := &queuerabbitmq.RabbitMQAdapter{}
+	if adapter.Capabilities().Dedup {
+		t.Fatal("expected RabbitMQ Dedup capability to be false (no dedup mechanism)")
+	}
+}

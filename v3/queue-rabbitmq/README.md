@@ -47,6 +47,29 @@ func main() {
 
 ---
 
+## 🔁 Automatic reconnection
+
+The adapter keeps its AMQP connection alive automatically: a supervisor
+watches the connection and channel and re-dials with exponential backoff
+(100ms → 10s, configurable via `WithReconnectBackoff`) whenever the broker or
+the network closes either.
+
+Semantics after a connection loss:
+
+- Deliveries that were unacked are **requeued by the broker** and redelivered
+  (at-least-once). Nothing is lost.
+- `Ack`/`Nack` on deliveries from a dropped connection are treated as settled;
+  the redelivery is the retry.
+- Operations issued while the supervisor is reconnecting return the sentinel
+  `queuerabbitmq.ErrReconnecting` — safe to retry.
+
+```go
+adapter, err := queuerabbitmq.New("amqp://guest:guest@localhost:5672/",
+    queuerabbitmq.WithReconnectBackoff(100*time.Millisecond, 10*time.Second))
+```
+
+---
+
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
