@@ -3,6 +3,9 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
+	"sort"
 	"sync"
 	"time"
 
@@ -26,6 +29,9 @@ type Consumer struct {
 	wg               sync.WaitGroup
 	closed           bool
 	mu               sync.Mutex
+	closeOnce        sync.Once
+	groupLocks       map[string]*sync.Mutex
+	groupMu          sync.Mutex
 }
 
 // ConsumerOption configures parameters of a Consumer.
@@ -83,6 +89,7 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 		retryPolicy:      DefaultRetryPolicy(),
 		logger:           DefaultLogger(),
 		quit:             make(chan struct{}),
+		groupLocks:       make(map[string]*sync.Mutex),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -154,6 +161,12 @@ func (c *Consumer) fetchAndProcess() int {
 		}
 	}
 
+	// dispatched counts deliveries successfully handed off to the worker engine.
+	// Backpressure rejects (ErrQueueFull) are Nacked and NOT counted, so the
+	// adaptive drain loop stops pulling new batches when the engine is saturated
+	// instead of hot-looping on immediately-redelivered Nacked messages.
+	dispatched := 0
+
 	// 1. Process Independent Deliveries (Dispatched to worker pool)
 	for _, del := range independent {
 		d := del
@@ -167,9 +180,34 @@ func (c *Consumer) fetchAndProcess() int {
 				return c.handleFailure(tCtx, d, ErrNoHandlerFound)
 			}
 
-			// Execute handler with access to SubWorkerPool for parallel fan-out
-			if err := handler(tCtx, m, subPool); err != nil {
-				return c.handleFailure(tCtx, d, err)
+			// Execute handler with access to SubWorkerPool for parallel fan-out.
+			// A handler panic must flow through the failure path (retry/DLQ) so the
+			// delivery is never silently leaked as stuck in-flight.
+			var handlerErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						c.logger.Error("handler panic recovered",
+							"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID,
+							"panic", fmt.Sprint(r), "stack", string(debug.Stack()),
+						)
+						handlerErr = fmt.Errorf("handler panic on topic %q: %v", m.Topic, r)
+					}
+				}()
+				handlerErr = handler(tCtx, m, subPool)
+			}()
+
+			// Join the handler's fan-out before settling the delivery. The
+			// handler may spawn sub-workers and (mistakenly) return without
+			// calling pool.Wait(); settling first would Ack (or retry) the
+			// delivery while its sub-workers are still running, so a crash in
+			// between would lose the message's work (at-least-once violation).
+			if waitErr := subPool.Wait(); waitErr != nil && handlerErr == nil {
+				handlerErr = waitErr
+			}
+
+			if handlerErr != nil {
+				return c.handleFailure(tCtx, d, handlerErr)
 			}
 
 			return c.driver.Ack(tCtx, d)
@@ -180,46 +218,132 @@ func (c *Consumer) fetchAndProcess() int {
 			// If worker engine task queue is full (backpressure), do not drop message!
 			// Nack immediately so broker/adapter can redeliver later when worker has capacity.
 			_ = c.driver.Nack(ctx, d, err)
+			continue
 		}
+		dispatched++
 	}
 
-	// 2. Process Grouped Deliveries (Coordinated via SubWorkerPool)
+	// 2. Process Grouped Deliveries in strict GroupOrder (FIFO per group).
+	// Members of a group are executed sequentially in ascending GroupOrder and a
+	// per-group lock serializes the group across consecutive polls, so a later
+	// batch can never overtake an in-flight one.
 	for groupID, dels := range grouped {
 		gID := groupID
 		groupDeliveries := dels
 
-		groupTask := worker.NewTaskFunc("group:"+gID, func(tCtx context.Context, subPool worker.SubWorkerPool) error {
-			for _, item := range groupDeliveries {
+		lock := c.groupLock(gID)
+		lock.Lock()
+
+		// The engine's per-task pool is intentionally unused here: grouped
+		// members get a fresh pool each (see below) so a sub-worker failure in
+		// one member cannot cancel the fan-out of the next.
+		groupTask := worker.NewTaskFunc("group:"+gID, func(tCtx context.Context, _ worker.SubWorkerPool) error {
+			defer lock.Unlock()
+
+			ordered := make([]*Delivery, len(groupDeliveries))
+			copy(ordered, groupDeliveries)
+			sort.SliceStable(ordered, func(i, j int) bool {
+				mi, mj := ordered[i].Message, ordered[j].Message
+				if mi == nil {
+					return false
+				}
+				if mj == nil {
+					return true
+				}
+				return mi.GroupOrder < mj.GroupOrder
+			})
+
+			for _, item := range ordered {
 				d := item
 				m := d.Message
 				if m == nil {
 					continue
 				}
-				subPool.Go(func(sCtx context.Context) error {
-					handler, exists := c.router.Get(m.Topic)
-					if !exists {
-						return c.handleFailure(sCtx, d, ErrNoHandlerFound)
+				handler, exists := c.router.Get(m.Topic)
+				if !exists {
+					if err := c.handleFailure(tCtx, d, ErrNoHandlerFound); err != nil {
+						c.logger.Error("failed to settle message after no-handler failure",
+							"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
+						)
 					}
+					continue
+				}
 
-					if err := handler(sCtx, m, subPool); err != nil {
-						return c.handleFailure(sCtx, d, err)
+				// A fresh sub-worker pool per member keeps one member's fan-out
+				// isolated: its failure/cancellation cannot bleed into the next
+				// member, and its sub-workers can be joined before that member is
+				// settled (Acked/retried/DLQ'd).
+				memberPool := worker.NewSubWorkerPool(tCtx, 0, m.Topic, c.logger)
+
+				// Panics are converted to failures so retry/DLQ logic still runs.
+				// Each member is settled (Ack/retry/DLQ) before the next member starts.
+				var handlerErr error
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							c.logger.Error("handler panic recovered",
+								"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID,
+								"panic", fmt.Sprint(r), "stack", string(debug.Stack()),
+							)
+							handlerErr = fmt.Errorf("handler panic on topic %q: %v", m.Topic, r)
+						}
+					}()
+					handlerErr = handler(tCtx, m, memberPool)
+				}()
+
+				// Join this member's fan-out before settling it, mirroring the
+				// independent-delivery path: a handler that spawns sub-workers
+				// and forgets pool.Wait() must not have its delivery Acked (or
+				// retried) while the sub-workers are still running.
+				if waitErr := memberPool.Wait(); waitErr != nil && handlerErr == nil {
+					handlerErr = waitErr
+				}
+
+				if handlerErr != nil {
+					if err := c.handleFailure(tCtx, d, handlerErr); err != nil {
+						c.logger.Error("failed to settle message after handler failure",
+							"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
+						)
 					}
-
-					return c.driver.Ack(sCtx, d)
-				})
+					continue
+				}
+				if err := c.driver.Ack(tCtx, d); err != nil {
+					c.logger.Error("failed to ack message",
+						"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
+					)
+				}
 			}
-			return subPool.Wait()
+			return nil
 		})
 
 		err := c.workerDispatcher.Dispatch(ctx, groupTask)
 		if err != nil {
+			lock.Unlock()
 			for _, item := range groupDeliveries {
 				_ = c.driver.Nack(ctx, item, err)
 			}
+			continue
 		}
+		dispatched += len(groupDeliveries)
 	}
 
-	return len(deliveries)
+	return dispatched
+}
+
+// groupLock returns the per-group mutex used to serialize handling of a group
+// across polling batches, guaranteeing members are processed in ascending GroupOrder.
+func (c *Consumer) groupLock(gid string) *sync.Mutex {
+	c.groupMu.Lock()
+	defer c.groupMu.Unlock()
+	if c.groupLocks == nil {
+		c.groupLocks = make(map[string]*sync.Mutex)
+	}
+	l, ok := c.groupLocks[gid]
+	if !ok {
+		l = &sync.Mutex{}
+		c.groupLocks[gid] = l
+	}
+	return l
 }
 
 func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error) error {
@@ -272,19 +396,41 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 		"error", reason,
 	)
 
-	// Acknowledge current delivery to prevent double-delivery by driver
-	_ = c.driver.Ack(ctx, d)
-
-	// Re-enqueue: check if adapter supports DelayedEnqueuer
-	if delayedAdapter, ok := c.driver.(DelayedEnqueuer); ok {
-		return delayedAdapter.EnqueueAt(ctx, m, time.Now().Add(backoff))
+	// Reschedule the delivery. Adapters implementing Reenqueuer fold the
+	// reschedule into the current delivery itself, eliminating the crash window
+	// between Acking the delivery and enqueuing the retry copy.
+	if reenqueuer, ok := c.driver.(Reenqueuer); ok {
+		return reenqueuer.Reenqueue(ctx, d, m, time.Now().Add(backoff))
 	}
 
-	// Core delayed dispatch fallback
+	// Re-enqueue before Acking: the retry copy is scheduled first, so a failure
+	// or crash after this point at worst redelivers the original too
+	// (at-least-once) rather than losing it (at-most-once).
+	if delayedAdapter, ok := c.driver.(DelayedEnqueuer); ok {
+		if err := delayedAdapter.EnqueueAt(ctx, m, time.Now().Add(backoff)); err != nil {
+			return err
+		}
+		if err := c.driver.Ack(ctx, d); err != nil {
+			c.logger.Error("failed to ack delivery after retry enqueue (retry copy already scheduled)",
+				"topic", m.Topic, "msg_id", m.ID, "error", err,
+			)
+			return err
+		}
+		return nil
+	}
+
+	// Core delayed dispatch fallback: the adapter supports no delayed enqueue, so
+	// schedule an immediate in-process re-enqueue and then Ack. This mirrors the
+	// old behaviour but enqueues before dropping the original.
 	time.AfterFunc(backoff, func() {
 		_ = c.driver.Enqueue(context.Background(), m)
 	})
-
+	if err := c.driver.Ack(ctx, d); err != nil {
+		c.logger.Error("failed to ack delivery after retry scheduled",
+			"topic", m.Topic, "msg_id", m.ID, "error", err,
+		)
+		return err
+	}
 	return reason
 }
 
@@ -334,6 +480,8 @@ func (c *Consumer) Stop() {
 
 	close(c.quit)
 	c.wg.Wait()
-	_ = c.driver.Close()
+	c.closeOnce.Do(func() {
+		_ = c.driver.Close()
+	})
 	c.logger.Info("queue consumer stopped gracefully")
 }

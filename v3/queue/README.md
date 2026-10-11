@@ -457,17 +457,20 @@ Failed messages automatically undergo exponential backoff retries with jitter:
 
 ```go
 customRetry := queue.RetryPolicy{
-    MaxAttempts:  5,
-    InitialDelay: 100 * time.Millisecond,
-    MaxDelay:     10 * time.Second,
-    Multiplier:   2.0,
-    Jitter:       true,
+    MaxAttempts: 5,
+    Initial:     100 * time.Millisecond,
+    Max:         10 * time.Second,
+    Multiplier:  2.0,
+    Jitter:      0.2,
 }
 
 consumer := queue.NewConsumer(driver, router, dispatcher,
     queue.WithRetryPolicy(customRetry),
 )
 ```
+
+### Crash-Safe Retry
+Retries are rescheduled **before** the current delivery is acknowledged whenever the adapter implements `queue.Reenqueuer` (all in-repo adapters do). This folds the reschedule into the delivery itself, so a crash between acking the old delivery and re-enqueuing the retry copy cannot lose the message — the worst case is a duplicate, never a loss.
 
 ### Non-Retryable Errors
 If a handler returns an error marked as non-retryable via `queue.MarkNonRetryable(err)` (or if no handler exists for the topic), the message **bypasses retry attempts** and is routed immediately to `<topic>:dlq`.

@@ -32,7 +32,7 @@ type Capabilities struct {
 	DelayedEnqueue    bool             // Supports scheduled future enqueue
 	StrictGlobalOrder bool             // Supports global FIFO ordering
 	Replay            bool             // Supports replay by sequence or timestamp
-	Dedup             bool             // Supports deduplication window
+	Dedup             bool             // Supports deduplication (by message ID or within a window), depending on adapter
 	MaxBatchSize      int              // Maximum recommended batch size
 	Guarantee         Guarantee        // Delivery guarantee level
 }
@@ -91,6 +91,14 @@ type Replayer interface {
 // DelayedEnqueuer allows enqueuing messages with execution delayed to a future timestamp.
 type DelayedEnqueuer interface {
 	EnqueueAt(ctx context.Context, msg *Message, at time.Time) error
+}
+
+// Reenqueuer allows adapters to reschedule an in-flight delivery to a future time
+// without the ack-then-enqueue crash window (where a crash between Ack and the
+// re-enqueue would lose the message entirely). Implementations must fold the
+// reschedule into the current delivery so the message survives a process crash.
+type Reenqueuer interface {
+	Reenqueue(ctx context.Context, d *Delivery, msg *Message, at time.Time) error
 }
 
 // Stats represents operational metrics of the queue.

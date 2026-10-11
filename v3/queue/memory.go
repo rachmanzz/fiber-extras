@@ -2,18 +2,20 @@ package queue
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 )
 
-// MemoryDriver implements Adapter using an in-memory priority slice.
-// Used as the default zero-config driver for testing and lightweight local development.
+// MemoryDriver is an in-process queue adapter backed by a sorted slice.
 type MemoryDriver struct {
-	name     string
 	mu       sync.Mutex
 	messages []*Message
+	timers   map[*time.Timer]struct{}
 	closed   bool
+
+	name string
 }
 
 // NewMemoryDriver constructs a new in-memory queue driver with default name "memory".
@@ -32,9 +34,7 @@ func NewNamedMemoryDriver(name string) *MemoryDriver {
 	}
 }
 
-func (m *MemoryDriver) Name() string {
-	return m.name
-}
+func (m *MemoryDriver) Name() string { return m.name }
 
 func (m *MemoryDriver) Capabilities() Capabilities {
 	return Capabilities{
@@ -51,21 +51,34 @@ func (m *MemoryDriver) Capabilities() Capabilities {
 	}
 }
 
+// memoryLess reports whether a should be dequeued before b: higher priority
+// first, then ascending GroupOrder within the same group, then FIFO by CreatedAt.
+func memoryLess(a, b *Message) bool {
+	if a.Priority != b.Priority {
+		return a.Priority > b.Priority
+	}
+	if a.GroupID != "" && a.GroupID == b.GroupID {
+		return a.GroupOrder < b.GroupOrder
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
+}
+
 func (m *MemoryDriver) Enqueue(ctx context.Context, msg *Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("queue-memory: driver is closed")
+	}
 
-	m.messages = append(m.messages, msg)
-	// Sort by Priority DESC, then GroupOrder ASC if in same group, then CreatedAt ASC
-	sort.SliceStable(m.messages, func(i, j int) bool {
-		if m.messages[i].Priority != m.messages[j].Priority {
-			return m.messages[i].Priority > m.messages[j].Priority
-		}
-		if m.messages[i].GroupID != "" && m.messages[i].GroupID == m.messages[j].GroupID {
-			return m.messages[i].GroupOrder < m.messages[j].GroupOrder
-		}
-		return m.messages[i].CreatedAt.Before(m.messages[j].CreatedAt)
+	// Insert into the already-sorted slice at the boundary found by binary
+	// search (O(log n) lookup + O(n) shift) instead of re-sorting the whole
+	// slice on every Enqueue.
+	idx := sort.Search(len(m.messages), func(i int) bool {
+		return memoryLess(msg, m.messages[i])
 	})
+	m.messages = append(m.messages, nil)
+	copy(m.messages[idx+1:], m.messages[idx:])
+	m.messages[idx] = msg
 	return nil
 }
 
@@ -110,21 +123,57 @@ func (m *MemoryDriver) Nack(ctx context.Context, d *Delivery, reason error) erro
 	return m.Enqueue(ctx, d.Message)
 }
 
+// Reenqueue reschedules a failed delivery to a future time. The in-memory slice
+// already removed the delivery at Dequeue time, so inserting one copy at the
+// target time cannot create duplicates or lose the message.
+func (m *MemoryDriver) Reenqueue(ctx context.Context, d *Delivery, msg *Message, at time.Time) error {
+	if d == nil || d.Message == nil {
+		return nil
+	}
+	return m.EnqueueAt(ctx, msg, at)
+}
+
 func (m *MemoryDriver) EnqueueAt(ctx context.Context, msg *Message, at time.Time) error {
 	delay := time.Until(at)
 	if delay <= 0 {
 		return m.Enqueue(ctx, msg)
 	}
-	time.AfterFunc(delay, func() {
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return fmt.Errorf("queue-memory: driver is closed")
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		delete(m.timers, timer)
+		closed := m.closed
+		m.mu.Unlock()
+		if closed {
+			return
+		}
 		_ = m.Enqueue(context.Background(), msg)
 	})
+	if m.timers == nil {
+		m.timers = make(map[*time.Timer]struct{})
+	}
+	m.timers[timer] = struct{}{}
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *MemoryDriver) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil
+	}
 	m.closed = true
+	for t := range m.timers {
+		t.Stop()
+	}
+	m.timers = nil
 	m.messages = nil
 	return nil
 }

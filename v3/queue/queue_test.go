@@ -296,3 +296,72 @@ func TestQueue_MemoryDriver_CapabilityConsistency(t *testing.T) {
 		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
 	}
 }
+
+// TestQueue_MemoryDriver_SortedInsertionFIFO guards the binary-search insertion
+// path: messages of equal priority must be dequeued in FIFO order even when
+// they are inserted interleaved with higher/lower priority messages.
+func TestQueue_MemoryDriver_SortedInsertionFIFO(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	defer func() { _ = driver.Close() }()
+
+	ctx := context.Background()
+	specs := []struct {
+		id   string
+		prio queue.Priority
+	}{
+		{"d1", queue.PriorityDefault},
+		{"x", queue.PriorityCritical},
+		{"d2", queue.PriorityDefault},
+		{"d3", queue.PriorityDefault},
+		{"y", queue.PriorityLow},
+		{"d4", queue.PriorityDefault},
+	}
+	for _, s := range specs {
+		m := queue.NewMessage("test:fifo", nil, queue.WithPriority(s.prio))
+		m.ID = s.id
+		if err := driver.Enqueue(ctx, m); err != nil {
+			t.Fatalf("enqueue failed: %v", err)
+		}
+	}
+
+	deliveries, err := driver.Dequeue(ctx, queue.DequeueRequest{BatchSize: 10})
+	if err != nil {
+		t.Fatalf("dequeue failed: %v", err)
+	}
+	want := []string{"x", "d1", "d2", "d3", "d4", "y"}
+	if len(deliveries) != len(want) {
+		t.Fatalf("expected %d deliveries, got %d", len(want), len(deliveries))
+	}
+	for i, w := range want {
+		if got := deliveries[i].Message.ID; got != w {
+			t.Fatalf("position %d: expected %q, got %q", i, w, got)
+		}
+	}
+}
+
+// TestQueue_MemoryDriver_EnqueueAtAfterClose verifies a delayed message
+// scheduled before Close neither errors at schedule time nor fires after close.
+func TestQueue_MemoryDriver_EnqueueAtAfterClose(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	ctx := context.Background()
+
+	m := queue.NewMessage("test:delayed", []byte("payload"))
+	if err := driver.EnqueueAt(ctx, m, time.Now().Add(20*time.Millisecond)); err != nil {
+		t.Fatalf("EnqueueAt returned error: %v", err)
+	}
+
+	if err := driver.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	// Scheduling after Close must be rejected.
+	if err := driver.EnqueueAt(ctx, queue.NewMessage("test:delayed", nil), time.Now().Add(time.Millisecond)); err == nil {
+		t.Fatal("expected error enqueueing on a closed driver")
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	deliveries, _ := driver.Dequeue(ctx, queue.DequeueRequest{BatchSize: 10})
+	if len(deliveries) != 0 {
+		t.Fatalf("expected no deliveries after close, got %d", len(deliveries))
+	}
+}
