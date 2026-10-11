@@ -210,6 +210,138 @@ func (r *RabbitMQAdapter) Capabilities() queue.Capabilities {
 	}
 }
 
+// Wire format (split transport): the AMQP Body carries the user payload as
+// raw bytes and all adapter metadata travels in AMQP headers under reserved
+// "fiber-*" keys (user headers are packed into the single "fiber-headers"
+// entry as JSON so arbitrary keys can never collide with reserved ones). The
+// payload never passes through a text encoding, so no base64 tax applies.
+// This is the only wire format: a record that is missing or cannot be decoded
+// surfaces as a poison delivery instead of being guessed.
+const (
+	hdrEnvelope    = "fiber-envelope"
+	hdrID          = "fiber-id"
+	hdrTopic       = "fiber-topic"
+	hdrPriority    = "fiber-priority"
+	hdrCreatedAt   = "fiber-created-at"
+	hdrAttempt     = "fiber-attempt"
+	hdrMaxAttempt  = "fiber-max-attempts"
+	hdrGroupID     = "fiber-group-id"
+	hdrGroupOrder  = "fiber-group-order"
+	hdrDriver      = "fiber-driver"
+	hdrUserHeaders = "fiber-headers"
+)
+
+// wireVersion marks messages that use the v2 split transport.
+const wireVersion int64 = 2
+
+// tableInt reads an integer out of an amqp.Table regardless of the wire type
+// the AMQP codec chose for it (short-int, long-int or long-long-int).
+func tableInt(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	}
+	return 0, false
+}
+
+// buildAMQPHeaders renders the v2 metadata table: reserved "fiber-*" scalars
+// plus the user headers packed as JSON under "fiber-headers" (text-safe, and
+// collision-free against the reserved keys). "x-msg-id" is kept for tooling
+// that predates the v2 format.
+func buildAMQPHeaders(msg *queue.Message) amqp.Table {
+	h := amqp.Table{
+		"x-msg-id":    msg.ID,
+		hdrEnvelope:   wireVersion,
+		hdrID:         msg.ID,
+		hdrTopic:      msg.Topic,
+		hdrPriority:   int64(msg.Priority),
+		hdrCreatedAt:  msg.CreatedAt.UTC().Format(time.RFC3339Nano),
+		hdrAttempt:    int64(msg.Attempt),
+		hdrMaxAttempt: int64(msg.MaxAttempts),
+	}
+	if msg.GroupID != "" {
+		h[hdrGroupID] = msg.GroupID
+	}
+	if msg.GroupOrder != 0 {
+		h[hdrGroupOrder] = int64(msg.GroupOrder)
+	}
+	if msg.Driver != "" {
+		h[hdrDriver] = msg.Driver
+	}
+	if len(msg.Headers) > 0 {
+		if raw, err := json.Marshal(msg.Headers); err == nil {
+			h[hdrUserHeaders] = string(raw)
+		}
+	}
+	return h
+}
+
+// decodeAMQPDelivery rebuilds a queue.Message from a v2 split-transport AMQP
+// delivery: the Body is the raw payload, the headers carry the metadata.
+// Corrupt or missing reserved metadata yields an error (surfaced as a poison
+// delivery by the caller).
+func decodeAMQPDelivery(d amqp.Delivery) (*queue.Message, error) {
+	if v, ok := tableInt(d.Headers[hdrEnvelope]); !ok || v != wireVersion {
+		return nil, fmt.Errorf("missing v2 envelope marker")
+	}
+	id, _ := d.Headers[hdrID].(string)
+	if id == "" {
+		return nil, fmt.Errorf("missing %s header", hdrID)
+	}
+	topic, _ := d.Headers[hdrTopic].(string)
+	if topic == "" {
+		return nil, fmt.Errorf("missing %s header", hdrTopic)
+	}
+	priority, ok := tableInt(d.Headers[hdrPriority])
+	if !ok {
+		return nil, fmt.Errorf("invalid %s header", hdrPriority)
+	}
+	createdAtStr, _ := d.Headers[hdrCreatedAt].(string)
+	createdAt, err := time.Parse(time.RFC3339Nano, createdAtStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s header: %w", hdrCreatedAt, err)
+	}
+	attempt, ok := tableInt(d.Headers[hdrAttempt])
+	if !ok {
+		return nil, fmt.Errorf("invalid %s header", hdrAttempt)
+	}
+	maxAttempts, ok := tableInt(d.Headers[hdrMaxAttempt])
+	if !ok {
+		return nil, fmt.Errorf("invalid %s header", hdrMaxAttempt)
+	}
+	groupOrder := int64(0)
+	if v, ok := tableInt(d.Headers[hdrGroupOrder]); ok {
+		groupOrder = v
+	}
+
+	headers := map[string]string{}
+	if raw, ok := d.Headers[hdrUserHeaders].(string); ok && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+			return nil, fmt.Errorf("invalid %s header: %w", hdrUserHeaders, err)
+		}
+	}
+
+	groupID, _ := d.Headers[hdrGroupID].(string)
+	driver, _ := d.Headers[hdrDriver].(string)
+	return &queue.Message{
+		ID:          id,
+		Topic:       topic,
+		Payload:     d.Body,
+		Priority:    queue.Priority(priority),
+		GroupID:     groupID,
+		GroupOrder:  int(groupOrder),
+		Headers:     headers,
+		CreatedAt:   createdAt,
+		Attempt:     int(attempt),
+		MaxAttempts: int(maxAttempts),
+		Driver:      driver,
+	}, nil
+}
+
 // mapPriority converts queue.Priority (0-100) to RabbitMQ priority (0-10).
 func mapPriority(p queue.Priority) uint8 {
 	val := int(p) / 10
@@ -261,7 +393,11 @@ func (r *RabbitMQAdapter) withChannelGen(fn func(ch *amqp.Channel, gen uint64) e
 		return ErrReconnecting
 	}
 	if err := fn(ch, gen); err != nil {
-		if ch.IsClosed() {
+		// A connection death is not always reflected in ch.IsClosed() by the
+		// time the operation fails; amqp.ErrClosed ("channel/connection is
+		// not open") covers that window and is reported as the retryable
+		// reconnecting sentinel.
+		if ch.IsClosed() || errors.Is(err, amqp.ErrClosed) {
 			return ErrReconnecting
 		}
 		return err
@@ -288,7 +424,7 @@ func (r *RabbitMQAdapter) withDeliveryChannel(tok deliveryToken, fn func(ch *amq
 		return ErrReconnecting
 	}
 	if err := fn(ch); err != nil {
-		if ch.IsClosed() {
+		if ch.IsClosed() || errors.Is(err, amqp.ErrClosed) {
 			return ErrReconnecting
 		}
 		return err
@@ -307,28 +443,16 @@ func settleError(err error) error {
 }
 
 // Enqueue publishes a message into RabbitMQ with persistent delivery mode and priority.
+// v2 split transport: the Body is the raw payload; metadata travels in AMQP headers.
 func (r *RabbitMQAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("queue-rabbitmq: failed to encode message: %w", err)
-	}
-
-	headers := amqp.Table{
-		"x-msg-id": msg.ID,
-		"x-topic":  msg.Topic,
-	}
-	for k, v := range msg.Headers {
-		headers[k] = v
-	}
-
 	pub := amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		Priority:     mapPriority(msg.Priority),
 		Timestamp:    msg.CreatedAt,
 		MessageId:    msg.ID,
 		Type:         msg.Topic,
-		Headers:      headers,
-		Body:         raw,
+		Headers:      buildAMQPHeaders(msg),
+		Body:         msg.Payload,
 	}
 
 	return r.withChannel(func(ch *amqp.Channel) error {
@@ -369,16 +493,19 @@ func (r *RabbitMQAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest)
 			break
 		}
 
-		var m queue.Message
-		if err := json.Unmarshal(msg.Body, &m); err != nil {
-			// Publish a poison copy before acknowledging the undecodable
-			// original: if this fails the original stays unacked and is
-			// requeued by RabbitMQ instead of being silently dropped.
+		var m *queue.Message
+		var derr error
+		m, derr = decodeAMQPDelivery(msg)
+		if derr != nil {
+			// Undecodable or non-split-transport record: publish a poison copy
+			// before acknowledging the original -- if this fails the original
+			// stays unacked and is requeued by RabbitMQ instead of being
+			// silently dropped.
 			poisonID := msg.MessageId
 			if poisonID == "" {
 				poisonID = queue.NewUUID()
 			}
-			poison := queue.NewPoisonMessage(poisonID, msg.Body, err, r.Name())
+			poison := queue.NewPoisonMessage(poisonID, msg.Body, derr, r.Name())
 			if pErr := r.Enqueue(ctx, poison); pErr != nil {
 				return nil, fmt.Errorf("queue-rabbitmq: failed to surface undecodable message to DLQ: %w", pErr)
 			}
@@ -389,7 +516,7 @@ func (r *RabbitMQAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest)
 		}
 
 		deliveries = append(deliveries, &queue.Delivery{
-			Message: &m,
+			Message: m,
 			Token:   deliveryToken{gen: gen, tag: msg.DeliveryTag},
 		})
 	}
