@@ -2,10 +2,9 @@ package queue
 
 import (
 	"context"
-	"crypto/rand"
-	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rachmanzz/fiber-extras/v3/worker"
 )
 
@@ -98,7 +97,7 @@ func WithMaxAttempts(max int) DispatchOption {
 // NewMessage constructs a message with default values and options applied.
 func NewMessage(topic string, payload []byte, opts ...DispatchOption) *Message {
 	msg := &Message{
-		ID:          newUUID(),
+		ID:          NewUUID(),
 		Topic:       topic,
 		Payload:     payload,
 		Priority:    PriorityDefault,
@@ -113,11 +112,7 @@ func NewMessage(topic string, payload []byte, opts ...DispatchOption) *Message {
 	return msg
 }
 
-// newUUID generates a RFC4122 v4 UUID using crypto/rand with zero third-party dependencies.
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+// NewUUID generates a RFC4122 v4 UUID string, powered by github.com/google/uuid.
+func NewUUID() string {
+	return uuid.NewString()
 }
