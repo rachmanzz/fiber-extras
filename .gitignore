@@ -32,3 +32,9 @@ go.work.sum
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local knowledge base (audit notes, not committed)
+.knowledge/
+.knowlage/
+
+temp/
