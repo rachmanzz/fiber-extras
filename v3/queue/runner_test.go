@@ -158,3 +158,39 @@ func TestRunner_FallbackGlobalConsumer(t *testing.T) {
 		t.Fatalf("expected message to be processed by global consumer, got %d", processed)
 	}
 }
+
+// TestRunner_RestartableAfterStop verifies that a Runner can be started again
+// after a completed shutdown (the running flag is reset and stopCh renewed).
+// Consumers are single-use, so a fresh consumer is attached before the second run.
+func TestRunner_RestartableAfterStop(t *testing.T) {
+	newConsumer := func() *queue.Consumer {
+		driver := queue.NewMemoryDriver()
+		router := queue.NewRouter()
+		engine := worker.NewEngine(worker.Config{MaxWorkers: 1, TaskQueueSize: 4})
+		engine.Start()
+		t.Cleanup(func() { _ = engine.Shutdown() })
+		return queue.NewConsumer(driver, router, engine, queue.WithPollInterval(5*time.Millisecond))
+	}
+
+	runner := queue.NewRunner(newConsumer())
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run() }()
+	time.Sleep(50 * time.Millisecond)
+	runner.Stop()
+	if err := <-errCh; err != nil {
+		t.Fatalf("first Run returned error: %v", err)
+	}
+
+	runner.AddConsumer(newConsumer())
+	go func() { errCh <- runner.Run() }()
+	time.Sleep(50 * time.Millisecond)
+	runner.Stop()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("second Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner timed out waiting for restart")
+	}
+}

@@ -135,6 +135,17 @@ func (r *Runner) Run(ctx ...context.Context) error {
 	r.running = true
 	r.mu.Unlock()
 
+	// Reset the running/stopped state and renew stopCh so the Runner can be
+	// started again after this invocation returns (before-start hook failure,
+	// consumer start error, or a completed shutdown sequence).
+	defer func() {
+		r.mu.Lock()
+		r.running = false
+		r.stopped = false
+		r.stopCh = make(chan struct{})
+		r.mu.Unlock()
+	}()
+
 	var parentCtx context.Context
 	if len(ctx) > 0 && ctx[0] != nil {
 		parentCtx = ctx[0]
