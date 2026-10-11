@@ -66,3 +66,10 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgres://fiber:secretpassword@127.0.0.1:5432/fiber_test?sslmode=disable
         run: go test -v -count=1 -cover -race ./...
+
+      - name: Stress test against live PostgreSQL
+        working-directory: v3/queue-postgres
+        env:
+          TEST_POSTGRES_DSN: postgres://fiber:secretpassword@127.0.0.1:5432/fiber_test?sslmode=disable
+          STRESS_REQUIRE_LIVE: "1"
+        run: go test -tags stress -count=1 -race -v ./...

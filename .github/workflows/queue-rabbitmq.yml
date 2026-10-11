@@ -41,6 +41,7 @@ jobs:
           RABBITMQ_DEFAULT_PASS: secretpassword
         ports:
           - "127.0.0.1:5672:5672"
+          - "127.0.0.1:15672:15672"
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 5s
@@ -66,3 +67,11 @@ jobs:
         env:
           TEST_RABBITMQ_URL: amqp://fiber:secretpassword@127.0.0.1:5672/
         run: go test -v -count=1 -cover -race ./...
+
+      - name: Stress test against live RabbitMQ
+        working-directory: v3/queue-rabbitmq
+        env:
+          TEST_RABBITMQ_URL: amqp://fiber:secretpassword@127.0.0.1:5672/
+          TEST_RABBITMQ_MGMT_URL: http://127.0.0.1:15672
+          STRESS_REQUIRE_LIVE: "1"
+        run: go test -tags stress -count=1 -race -v ./...

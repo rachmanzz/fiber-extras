@@ -77,3 +77,9 @@ jobs:
         env:
           TEST_NATS_URL: ""
         run: go test -v -count=1 -cover -race ./...
+
+      - name: Stress test against live NATS (JetStream)
+        working-directory: v3/queue-nats
+        env:
+          TEST_NATS_URL: nats://127.0.0.1:4222
+        run: go test -tags stress -count=1 -race -v ./...

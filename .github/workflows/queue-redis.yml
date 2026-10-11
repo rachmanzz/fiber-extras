@@ -62,3 +62,10 @@ jobs:
         env:
           TEST_REDIS_ADDR: 127.0.0.1:6379
         run: go test -v -count=1 -cover -race ./...
+
+      - name: Stress test against live Redis
+        working-directory: v3/queue-redis
+        env:
+          TEST_REDIS_ADDR: 127.0.0.1:6379
+          STRESS_REQUIRE_LIVE: "1"
+        run: go test -tags stress -count=1 -race -v ./...

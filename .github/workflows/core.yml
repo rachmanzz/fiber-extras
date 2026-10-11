@@ -54,3 +54,7 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.module }}
         run: go test -v -count=1 -cover -race ./...
+
+      - name: Stress test (in-memory, no broker)
+        working-directory: ${{ matrix.module }}
+        run: go test -tags stress -count=1 -race ./...
