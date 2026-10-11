@@ -19,6 +19,21 @@ type subWorkerPool struct {
 	logger   Logger
 }
 
+// NewSubWorkerPool constructs a standalone SubWorkerPool. It is exported so
+// callers that process multiple units of work inside a single task (for
+// example, ordered group deliveries) can give each unit its own pool. That
+// keeps one unit's sub-worker failure or cancellation from leaking into the
+// next unit, and lets each unit's fan-out be joined independently.
+func NewSubWorkerPool(ctx context.Context, maxConcurrency int, taskName string, logger Logger) SubWorkerPool {
+	if maxConcurrency <= 0 {
+		maxConcurrency = DefaultSubWorkerLimit
+	}
+	if logger == nil {
+		logger = DefaultLogger()
+	}
+	return newSubWorkerPool(ctx, maxConcurrency, taskName, logger)
+}
+
 func newSubWorkerPool(ctx context.Context, maxConcurrency int, taskName string, logger Logger) *subWorkerPool {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 5
