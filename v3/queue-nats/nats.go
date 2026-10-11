@@ -3,6 +3,7 @@ package queuenats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,15 +15,16 @@ import (
 
 // NATSAdapter implements queue.Adapter for NATS JetStream.
 type NATSAdapter struct {
-	mu         sync.RWMutex
-	nc         *nats.Conn
-	js         nats.JetStreamContext
-	stream     string
-	critSub    *nats.Subscription
-	highSub    *nats.Subscription
-	defaultSub *nats.Subscription
-	lowSub     *nats.Subscription
-	closed     bool
+	mu          sync.RWMutex
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	stream      string
+	critSub     *nats.Subscription
+	highSub     *nats.Subscription
+	defaultSub  *nats.Subscription
+	lowSub      *nats.Subscription
+	closed      bool
+	retryTimers map[*time.Timer]struct{}
 }
 
 // Config holds parameters for JetStream queue adapter.
@@ -31,6 +33,9 @@ type Config struct {
 	Storage       string // "file" or "memory"
 	AckWait       time.Duration
 	MaxAckPending int
+	// DedupWindow is how long JetStream retains message IDs for duplicate
+	// suppression (the stream's Duplicates window). Defaults to 2 minutes.
+	DedupWindow time.Duration
 }
 
 // DefaultConfig returns recommended production defaults.
@@ -40,6 +45,7 @@ func DefaultConfig() Config {
 		Storage:       "file",
 		AckWait:       30 * time.Second,
 		MaxAckPending: 1000,
+		DedupWindow:   2 * time.Minute,
 	}
 }
 
@@ -73,6 +79,15 @@ func WithAckWait(wait time.Duration) Option {
 	}
 }
 
+// WithDedupWindow sets how long JetStream suppresses duplicate message IDs.
+func WithDedupWindow(d time.Duration) Option {
+	return func(c *Config) {
+		if d > 0 {
+			c.DedupWindow = d
+		}
+	}
+}
+
 // New constructs a NATSAdapter from a connection and options.
 func New(nc *nats.Conn, opts ...Option) (*NATSAdapter, error) {
 	cfg := DefaultConfig()
@@ -93,6 +108,9 @@ func NewWithConfig(nc *nats.Conn, cfg Config) (*NATSAdapter, error) {
 	if cfg.MaxAckPending <= 0 {
 		cfg.MaxAckPending = 1000
 	}
+	if cfg.DedupWindow <= 0 {
+		cfg.DedupWindow = 2 * time.Minute
+	}
 
 	js, err := nc.JetStream()
 	if err != nil {
@@ -112,11 +130,11 @@ func NewWithConfig(nc *nats.Conn, cfg Config) (*NATSAdapter, error) {
 		Storage:    storageType,
 		Retention:  nats.WorkQueuePolicy,
 		Discard:    nats.DiscardOld,
-		Duplicates: 2 * time.Minute,
+		Duplicates: cfg.DedupWindow,
 	}
 
 	_, err = js.AddStream(streamCfg)
-	if err != nil && !strings.Contains(err.Error(), "stream name already in use") {
+	if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 		return nil, fmt.Errorf("queue-nats: failed to create or verify jetstream stream: %w", err)
 	}
 
@@ -130,7 +148,7 @@ func NewWithConfig(nc *nats.Conn, cfg Config) (*NATSAdapter, error) {
 			MaxAckPending: cfg.MaxAckPending,
 		}
 		_, cErr := js.AddConsumer(cfg.Stream, cCfg)
-		if cErr != nil && !strings.Contains(cErr.Error(), "consumer already exists") {
+		if cErr != nil && !errors.Is(cErr, nats.ErrConsumerNameAlreadyInUse) {
 			return nil, cErr
 		}
 		return js.PullSubscribe(filter, name, nats.Bind(cfg.Stream, name))
@@ -213,6 +231,10 @@ func (n *NATSAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
 		n.mu.RUnlock()
 		return fmt.Errorf("queue-nats: adapter is closed")
 	}
+	if n.js == nil {
+		n.mu.RUnlock()
+		return fmt.Errorf("queue-nats: jetstream context is not initialized")
+	}
 	n.mu.RUnlock()
 
 	raw, err := json.Marshal(msg)
@@ -269,6 +291,17 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		for _, rawMsg := range msgs {
 			var m queue.Message
 			if err := json.Unmarshal(rawMsg.Data, &m); err != nil {
+				// Publish a poison copy before terminating the undecodable
+				// original: if this fails the original stays unacked and is
+				// redelivered by JetStream instead of being silently lost.
+				poisonID := rawMsg.Header.Get("Nats-Msg-Id")
+				if poisonID == "" {
+					poisonID = queue.NewUUID()
+				}
+				poison := queue.NewPoisonMessage(poisonID, rawMsg.Data, err, n.Name())
+				if pErr := n.Enqueue(ctx, poison); pErr != nil {
+					return nil, fmt.Errorf("queue-nats: failed to surface undecodable message to DLQ: %w", pErr)
+				}
 				_ = rawMsg.Term()
 				continue
 			}
@@ -281,6 +314,60 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 	}
 
 	return deliveries, nil
+}
+
+// Reenqueue republishes the retry copy at the target time and only then
+// acknowledges the current delivery. Publishing before the Ack removes the
+// ack-then-enqueue crash window: if the process dies in between, the original
+// delivery is still unacked and is redelivered by JetStream instead of being lost.
+func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *queue.Message, at time.Time) error {
+	if d == nil || d.Token == nil {
+		return nil
+	}
+
+	n.mu.RLock()
+	if n.closed {
+		n.mu.RUnlock()
+		return fmt.Errorf("queue-nats: adapter is closed")
+	}
+	n.mu.RUnlock()
+
+	delay := time.Until(at)
+	if delay > 0 {
+		var timer *time.Timer
+		timer = time.AfterFunc(delay, func() {
+			n.mu.Lock()
+			delete(n.retryTimers, timer)
+			closed := n.closed
+			n.mu.Unlock()
+			if closed {
+				return
+			}
+			// Detach from the original request context's cancellation/deadline
+			// but keep its values, so a cancelled caller does not abort the
+			// deferred re-enqueue and ack.
+			cbCtx := context.WithoutCancel(ctx)
+			_ = n.Enqueue(cbCtx, msg)
+			_ = n.Ack(cbCtx, d)
+		})
+
+		n.mu.Lock()
+		if n.closed {
+			n.mu.Unlock()
+			timer.Stop()
+			return fmt.Errorf("queue-nats: adapter is closed")
+		}
+		if n.retryTimers == nil {
+			n.retryTimers = make(map[*time.Timer]struct{})
+		}
+		n.retryTimers[timer] = struct{}{}
+		n.mu.Unlock()
+		return nil
+	}
+	if err := n.Enqueue(ctx, msg); err != nil {
+		return err
+	}
+	return n.Ack(ctx, d)
 }
 
 // Ack confirms successful processing of a delivery.
@@ -315,6 +402,10 @@ func (n *NATSAdapter) Close() error {
 		return nil
 	}
 	n.closed = true
+	for t := range n.retryTimers {
+		t.Stop()
+	}
+	n.retryTimers = nil
 	subs := []*nats.Subscription{n.critSub, n.highSub, n.defaultSub, n.lowSub}
 	for _, s := range subs {
 		if s != nil {
@@ -325,5 +416,5 @@ func (n *NATSAdapter) Close() error {
 }
 
 func errorsIsTimeout(err error) bool {
-	return err == nats.ErrTimeout || strings.Contains(err.Error(), "timeout")
+	return errors.Is(err, nats.ErrTimeout) || strings.Contains(err.Error(), "timeout")
 }

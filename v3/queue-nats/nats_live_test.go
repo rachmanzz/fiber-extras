@@ -199,3 +199,63 @@ func TestNATSAdapter_Live_Dedup(t *testing.T) {
 		t.Fatalf("queue-nats: ack failed: %v", err)
 	}
 }
+
+// TestNATSAdapter_Live_UndecodablePayloadSurfacesPoison verifies that a payload
+// that cannot be decoded is not silently terminated: it is surfaced back as a
+// poison message (queue.PoisonTopic) so the consumer can route it to the DLQ.
+func TestNATSAdapter_Live_UndecodablePayloadSurfacesPoison(t *testing.T) {
+	nc, cfg := startNATSForTest(t)
+
+	adapter, err := queuenats.NewWithConfig(nc, cfg)
+	if err != nil {
+		t.Fatalf("queue-nats: failed to create adapter: %v", err)
+	}
+	defer adapter.Close()
+
+	t.Cleanup(func() {
+		if js, err := nc.JetStream(); err == nil {
+			_ = js.DeleteStream(cfg.Stream)
+		}
+	})
+
+	ctx := context.Background()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("queue-nats: failed to obtain jetstream context: %v", err)
+	}
+	subject := cfg.Stream + ".default.general.audit"
+	if _, err := js.Publish(subject, []byte("this is not json")); err != nil {
+		t.Fatalf("queue-nats: failed to publish corrupt payload: %v", err)
+	}
+
+	var poison *queue.Delivery
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && poison == nil {
+		batch, dErr := adapter.Dequeue(ctx, queue.DequeueRequest{BatchSize: 10})
+		if dErr != nil {
+			t.Fatalf("queue-nats: dequeue failed: %v", dErr)
+		}
+		for _, d := range batch {
+			if d.Message != nil && d.Message.Topic == queue.PoisonTopic {
+				poison = d
+				break
+			}
+			_ = adapter.Ack(ctx, d)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if poison == nil {
+		t.Fatal("queue-nats: corrupt payload was not surfaced as a poison message")
+	}
+	if poison.Message.Headers["decode_error"] == "" {
+		t.Fatal("queue-nats: expected decode_error header on poison message")
+	}
+	if poison.Message.Headers["decode_adapter"] != adapter.Name() {
+		t.Fatalf("queue-nats: expected decode_adapter=%q, got %q", adapter.Name(), poison.Message.Headers["decode_adapter"])
+	}
+	if err := adapter.Ack(ctx, poison); err != nil {
+		t.Fatalf("queue-nats: ack of poison failed: %v", err)
+	}
+}

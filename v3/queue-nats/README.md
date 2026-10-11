@@ -49,6 +49,20 @@ func main() {
 
 ---
 
+## 🧪 Dependencies
+
+`github.com/nats-io/nats-server/v2` is required **only by the test suite**, which
+spins up an in-process embedded JetStream server for broker-less tests
+(`TestNATSAdapter_Live_*` fall back to it when `TEST_NATS_URL` is unset). It is
+not imported by any package of this module, so downstream consumers never
+compile or download it. Live tests can instead target an external broker:
+
+```bash
+TEST_NATS_URL=nats://127.0.0.1:4222 go test ./...
+```
+
+---
+
 ## 📄 License
 
 This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
