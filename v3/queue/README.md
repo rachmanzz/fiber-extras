@@ -290,7 +290,7 @@ func RegisterHook(core *cores.AppContracts) {
         if cores.Config().Redis.Enable {
             redisprovider.Connect()
             rdb := redisprovider.Client()
-            driver := redisadapter.New(rdb, cores.Config().Redis.Prefix)
+            driver := redisadapter.New(rdb, redisadapter.WithPrefix(cores.Config().Redis.Prefix))
             queue.SetDriver(driver)
         } else {
             // Fallback to in-memory driver when Redis is disabled
@@ -431,7 +431,7 @@ func main() {
     rdb := redisprovider.Client()
 
     // 2. Attach driver and register topic handlers
-    queue.SetDriver(redisadapter.New(rdb, cores.Config().Redis.Prefix))
+    queue.SetDriver(redisadapter.New(rdb, redisadapter.WithPrefix(cores.Config().Redis.Prefix)))
     events.RegisterQueueTopics()
 
     // 3. Launch standalone Runner with graceful shutdown
@@ -532,14 +532,14 @@ goos: linux
 goarch: amd64
 pkg: github.com/rachmanzz/fiber-extras/v3/queue
 cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
-BenchmarkQueue_Memory_EnqueueDequeue-8   	 5186100	       211.9 ns/op	      80 B/op	       4 allocs/op
-BenchmarkQueue_Message_Creation-8        	 1528195	       780.2 ns/op	     392 B/op	       9 allocs/op
-BenchmarkQueue_Dispatch_JSON-8           	   20395	    117774 ns/op	     528 B/op	      12 allocs/op
+BenchmarkQueue_Memory_EnqueueDequeue-8   	17391493	       137.6 ns/op	      56 B/op	       3 allocs/op
+BenchmarkQueue_Message_Creation-8        	 6782758	       345.2 ns/op	     288 B/op	       4 allocs/op
+BenchmarkQueue_Dispatch_JSON-8           	 2691786	       985.3 ns/op	     378 B/op	       5 allocs/op
 ```
 
-- **In-Memory Priority Throughput (`EnqueueDequeue`)**: Over **5.1 million ops/sec** at **211.9 ns/op** and 80 B/op, confirming zero lock contention on memory driver operations.
-- **Message Model Instantiation**: Over **1.5 million msgs/sec** with functional options (`WithPriority`, `WithMaxAttempts`, `WithGroup`).
-- **End-to-End JSON Dispatch**: ~20,000 dispatches/sec incorporating runtime JSON serialization, topic routing validation, and adapter storage.
+- **In-Memory Priority Throughput (`EnqueueDequeue`)**: Over **17 million ops/sec** at **137.6 ns/op** and 56 B/op, confirming zero lock contention on memory driver operations.
+- **Message Model Instantiation**: Over **6.8 million msgs/sec** with functional options (`WithPriority`, `WithMaxAttempts`, `WithGroup`).
+- **End-to-End JSON Dispatch**: ~2.7 million dispatches/sec incorporating runtime JSON serialization, topic routing validation, and adapter storage.
 
 ---
 

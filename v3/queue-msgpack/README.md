@@ -120,23 +120,23 @@ Measured on one realistic probe payload (topic key + 4-key `map[string]string` +
 
 ```text
 goarch: amd64
-BenchmarkCodec_JSON_Marshal-8           	 1000000	      1008 ns/op	     560 B/op	      11 allocs/op
-BenchmarkCodec_Msgpack_Marshal-8        	 1939525	       611.0 ns/op	     560 B/op	       5 allocs/op
-BenchmarkCodec_JSON_Unmarshal-8         	  424887	      2828 ns/op	     840 B/op	      23 allocs/op
-BenchmarkCodec_Msgpack_Unmarshal-8      	 1196113	       979.9 ns/op	     584 B/op	      14 allocs/op
-BenchmarkQueue_Dispatch_JSON-8          	   27219	    193410 ns/op	    1057 B/op	      22 allocs/op
-BenchmarkQueue_Dispatch_Msgpack-8       	   18412	    125670 ns/op	    1372 B/op	      18 allocs/op
+BenchmarkCodec_JSON_Marshal-8           	 2443876	       998.7 ns/op	     560 B/op	      11 allocs/op
+BenchmarkCodec_Msgpack_Marshal-8        	 2653324	       918.3 ns/op	     560 B/op	       5 allocs/op
+BenchmarkCodec_JSON_Unmarshal-8         	  669906	      3596 ns/op	     840 B/op	      23 allocs/op
+BenchmarkCodec_Msgpack_Unmarshal-8      	 1849443	      1298 ns/op	     584 B/op	      14 allocs/op
+BenchmarkQueue_Dispatch_JSON-8          	 1000000	      2207 ns/op	     889 B/op	      15 allocs/op
+BenchmarkQueue_Dispatch_Msgpack-8       	 1239858	      2009 ns/op	    1202 B/op	      11 allocs/op
 ```
 
 | Operation | JSON | MessagePack | Δ |
 | :--- | ---: | ---: | :--- |
-| Marshal speed | 1008 ns/op | 611 ns/op | **~39% faster** |
-| Unmarshal speed | 2828 ns/op | 980 ns/op | **~65% faster** |
+| Marshal speed | 999 ns/op | 918 ns/op | **~8% faster** |
+| Unmarshal speed | 3596 ns/op | 1298 ns/op | **~64% faster** |
 | Encoded size | 194 B | 159 B | **−18%** |
-| Dispatch (end-to-end) | 193 µs/op | 126 µs/op | **~35% faster** |
+| Dispatch (end-to-end) | 2.2 µs/op | 2.0 µs/op | **~9% faster** |
 
 - **Marshal** cuts allocations by more than half (11 → 5); **Unmarshal** from 23 → 14.
-- The end-to-end `Dispatch` runs use the in-memory driver, whose per-enqueue `sort.SliceStable` dominates raw cost — the relative gap still favours MessagePack, and both add meaningful binary size savings on the wire.
+- The end-to-end `Dispatch` runs use the in-memory driver; the codec saves the most on decode (`Unmarshal`, ~64% faster), while end-to-end dispatch — dominated by enqueue bookkeeping on the small probe payload — narrows to ~9%.
 - Numbers are informational (local hardware); the CI [`bench`](../.github/workflows/bench.yml) workflow replays these benchmarks on every `main` commit.
 
 ---

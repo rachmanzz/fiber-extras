@@ -20,18 +20,19 @@ Designed from the ground up for high versatility: **fully compatible with pure F
 
 Because `fiber-extras` was extracted from real-world production workloads into a standalone open-source library, stability stages are explicitly communicated:
 
-- **`🧪 Beta (v0.1.0)`**: Core architecture, APIs, unit tests, and benchmarks are complete and verified against real workloads. Ready for staging and production testing.
-- **`🌱 Alpha (v0.1.0)`**: Driver implementation and functional tests are complete, but awaiting extended high-concurrency production verification and stress testing.
+- **`🧪 Beta`**: Core architecture, APIs, unit tests, and benchmarks are complete and verified against real workloads. Ready for staging and production testing.
+- **`🌱 Alpha`**: Driver implementation and functional tests are complete, but awaiting extended high-concurrency production verification and stress testing.
 
 | Package | Module Import Path | Maturity Status | Description |
 | :--- | :--- | :---: | :--- |
-| [worker](v3/worker) | `github.com/rachmanzz/fiber-extras/v3/worker` | `🧪 Beta (v0.1.0)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
-| [queue](v3/queue) | `github.com/rachmanzz/fiber-extras/v3/queue` | `🧪 Beta (v0.1.0)` | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
-| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/fiber-extras/v3/queue-redis` | `🧪 Beta (v0.1.0)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
-| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | `🌱 Alpha (v0.1.0)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
-| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | `🌱 Alpha (v0.1.0)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
-| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | `🌱 Alpha (v0.1.0)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
-| [queue-msgpack](v3/queue-msgpack) | `github.com/rachmanzz/fiber-extras/v3/queue-msgpack` | `🌱 Alpha (v0.1.0)` | Pluggable MessagePack payload codec for `v3/queue` (`queue.WithCodec`), working across every adapter. |
+| [worker](v3/worker) | `github.com/rachmanzz/fiber-extras/v3/worker` | `🧪 Beta (v0.2.0)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
+| [queue](v3/queue) | `github.com/rachmanzz/fiber-extras/v3/queue` | `🧪 Beta (v0.2.0)` | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
+| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/fiber-extras/v3/queue-redis` | `🧪 Beta (v0.2.1)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
+| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/fiber-extras/v3/queue-nats` | `🌱 Alpha (v0.2.1)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
+| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq` | `🌱 Alpha (v0.2.1)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
+| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/fiber-extras/v3/queue-postgres` | `🌱 Alpha (v0.2.0)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
+| [queue-msgpack](v3/queue-msgpack) | `github.com/rachmanzz/fiber-extras/v3/queue-msgpack` | `🌱 Alpha (v0.2.0)` | Pluggable MessagePack payload codec for `v3/queue` (`queue.WithCodec`), working across every adapter. |
+| [cron](v3/cron) | `github.com/rachmanzz/fiber-extras/v3/cron` | `🧪 Beta (v0.2.0)` | Production-grade scheduler with a Task contract, fluent schedule builders, panic recovery, skip-if-still-running, and graceful shutdown. |
 
 ---
 
@@ -42,16 +43,16 @@ All benchmark results are measured using Go's built-in testing tool (`go test -b
 ### Worker Engine (`v3/worker`)
 | Benchmark | Operations | Latency | Memory / Op | Allocs / Op |
 | :--- | :---: | :---: | :---: | :---: |
-| `BenchmarkWorker_Dispatch_Async` | ~6.5M | **162.2 ns/op** | 88 B/op | **1 allocs/op** |
-| `BenchmarkWorker_ExecuteSync` | ~4.9M | **311.3 ns/op** | 320 B/op | **4 allocs/op** |
-| `BenchmarkWorker_SubWorker_FanOut` | ~318k | **3,970 ns/op** | 680 B/op | **18 allocs/op** |
+| `BenchmarkWorker_Dispatch_Async` | ~18M | **~200 ns/op** | 78 B/op | **1 allocs/op** |
+| `BenchmarkWorker_ExecuteSync` | ~20M | **186 ns/op** | 320 B/op | **4 allocs/op** |
+| `BenchmarkWorker_SubWorker_FanOut` | ~610k | **3,990 ns/op** | 680 B/op | **18 allocs/op** |
 
 ### Queue Engine (`v3/queue`)
 | Benchmark | Operations | Latency | Memory / Op | Allocs / Op |
 | :--- | :---: | :---: | :---: | :---: |
-| `BenchmarkQueue_Memory_EnqueueDequeue` | ~5.1M | **211.9 ns/op** | 80 B/op | **4 allocs/op** |
-| `BenchmarkQueue_Message_Creation` | ~1.5M | **780.2 ns/op** | 392 B/op | **9 allocs/op** |
-| `BenchmarkQueue_Dispatch_JSON` | ~20k | **117.7 µs/op** | 528 B/op | **12 allocs/op** |
+| `BenchmarkQueue_Memory_EnqueueDequeue` | ~17M | **138 ns/op** | 56 B/op | **3 allocs/op** |
+| `BenchmarkQueue_Message_Creation` | ~6.8M | **345 ns/op** | 288 B/op | **4 allocs/op** |
+| `BenchmarkQueue_Dispatch_JSON` | ~2.7M | **985 ns/op** | 378 B/op | **5 allocs/op** |
 
 ---
 
