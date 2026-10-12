@@ -1,51 +1,164 @@
+# Dependabot configuration for the fiber-extras monorepo.
+#
+# Tuned for low noise and reliable signal:
+#   - weekly schedule, staggered per module so PRs do not burst on one day
+#   - versioning-strategy: increase-if-necessary -> only bump go.mod lines that
+#     actually need it, no gratuitous churn of indirect/toolchain deps
+#   - semver-major updates are IGNORED by Dependabot: breaking upgrades get a
+#     manual review instead of being bundled into a noisy weekly PR
+#   - minor+patch updates are grouped into one PR per module per week
+#   - open-pull-requests-limit caps concurrent PRs (default is 5 per ecosystem)
+#
+# Every Dependabot PR still runs the full CI (unit + `-tags stress` + live
+# broker integration + govulncheck) because all workflows trigger on
+# `pull_request`; require those checks before merging and the green result is a
+# genuine confirmation, not a "file touched but nothing real ran" signal.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: "/v3/worker"
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: gomod
     directory: "/v3/queue"
     schedule:
       interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: gomod
     directory: "/v3/queue-redis"
     schedule:
       interval: weekly
+      day: tuesday
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: gomod
     directory: "/v3/queue-nats"
     schedule:
       interval: weekly
+      day: tuesday
+      time: "07:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: gomod
     directory: "/v3/queue-rabbitmq"
     schedule:
       interval: weekly
+      day: wednesday
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: gomod
     directory: "/v3/queue-postgres"
     schedule:
       interval: weekly
+      day: wednesday
+      time: "07:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
     groups:
-      go:
+      go-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: gomod
+    directory: "/v3/queue-msgpack"
+    schedule:
+      interval: weekly
+      day: thursday
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: gomod
+    directory: "/v3/cron"
+    schedule:
+      interval: weekly
+      day: friday
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 2
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: friday
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 2
     groups:
       actions:
         patterns: ["*"]

@@ -1,0 +1,65 @@
+# Scans every v3/* module with golang.org/x/vuln/cmd/govulncheck.
+#
+# Runs per-module so each go.mod (and its dependency graph) is scanned from
+# its own module root. The go.work workspace in the repo root still applies,
+# so cross-module requires resolve as in local builds.
+name: govulncheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - "v3/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/govulncheck.yml"
+  pull_request:
+    paths:
+      - "v3/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/govulncheck.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulncheck:
+    name: Scan (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - v3/worker
+          - v3/queue
+          - v3/queue-redis
+          - v3/queue-nats
+          - v3/queue-rabbitmq
+          - v3/queue-postgres
+          - v3/queue-msgpack
+          - v3/cron
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: v3/**/go.sum
+
+      - name: Install govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -version
+
+      - name: Scan module
+        working-directory: ${{ matrix.module }}
+        run: govulncheck ./...
