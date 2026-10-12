@@ -2,6 +2,8 @@ module github.com/rachmanzz/fiber-extras/v3/queue-postgres
 
 go 1.26.0
 
+toolchain go1.27.2
+
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/rachmanzz/fiber-extras/v3/queue v0.2.0

@@ -1,5 +1,7 @@
 go 1.26.0
 
+toolchain go1.27.2
+
 use (
 	./v3/worker
 	./v3/queue

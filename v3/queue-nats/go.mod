@@ -2,6 +2,8 @@ module github.com/rachmanzz/fiber-extras/v3/queue-nats
 
 go 1.26.0
 
+toolchain go1.27.2
+
 require (
 	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.54.0
