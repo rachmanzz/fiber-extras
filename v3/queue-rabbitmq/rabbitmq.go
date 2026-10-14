@@ -31,7 +31,7 @@ var (
 	// ErrDeliveryLost is returned when an Ack or Nack operation cannot be completed
 	// because the connection dropped or the delivery token belongs to a previous connection.
 	// The broker requeued the delivery, so attempting to settle it fails explicitly.
-	ErrDeliveryLost = errors.New("queue-rabbitmq: delivery is no longer owned (connection dropped or delivery tag stale)")
+	ErrDeliveryLost = queue.ErrDeliveryLost
 
 	// ErrNilMessage is returned when attempting to enqueue a nil message.
 	ErrNilMessage = errors.New("queue-rabbitmq: cannot enqueue nil message")

@@ -944,6 +944,106 @@ func TestConsumer_StopCancelsInFlightTaskContext(t *testing.T) {
 	<-stopDone
 }
 
+func TestConsumer_CrossPollGroupInversionProtected(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
 
+	var mu sync.Mutex
+	var order []string
+	var step1Attempts int
 
+	step1Failed := make(chan struct{}, 1)
 
+	router.Register("group.crosspoll1", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		step1Attempts++
+		if step1Attempts == 1 {
+			order = append(order, "step1-attempt1")
+			select {
+			case step1Failed <- struct{}{}:
+			default:
+			}
+			return errors.New("transient error on step 1")
+		}
+		order = append(order, "step1-attempt2")
+		return nil
+	})
+
+	router.Register("group.crosspoll2", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		mu.Lock()
+		order = append(order, "step2")
+		mu.Unlock()
+		return nil
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 4, TaskQueueSize: 16})
+	engine.Start()
+	defer engine.Shutdown()
+
+	policy := queue.RetryPolicy{
+		MaxAttempts: 3,
+		Initial:     80 * time.Millisecond,
+		Multiplier:  1.0,
+		Max:         80 * time.Millisecond,
+		Jitter:      0.0,
+	}
+
+	consumer := queue.NewConsumer(
+		driver,
+		router,
+		engine,
+		queue.WithPollInterval(2*time.Millisecond),
+		queue.WithRetryPolicy(policy),
+	)
+	consumer.Start()
+	defer consumer.Stop()
+
+	// Enqueue step 1 only
+	m1 := queue.NewMessage("group.crosspoll1", []byte("1"), queue.WithGroup("grp-cross", 1))
+	if err := driver.Enqueue(context.Background(), m1); err != nil {
+		t.Fatalf("enqueue m1: %v", err)
+	}
+
+	// Wait for step 1 attempt 1 to fail and enter quarantine backoff
+	select {
+	case <-step1Failed:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for step 1 attempt 1 to fail")
+	}
+
+	// Now enqueue step 2 while step 1 is still in retry backoff quarantine
+	m2 := queue.NewMessage("group.crosspoll2", []byte("2"), queue.WithGroup("grp-cross", 2))
+	if err := driver.Enqueue(context.Background(), m2); err != nil {
+		t.Fatalf("enqueue m2: %v", err)
+	}
+
+	// Wait for processing to complete
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		count := len(order)
+		mu.Unlock()
+		if count >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 {
+		t.Fatalf("expected 3 executions, got %d: %v", len(order), order)
+	}
+
+	// Assert strict FIFO ordering: step1-attempt1 -> step1-attempt2 -> step2
+	if order[0] != "step1-attempt1" {
+		t.Errorf("expected first execution to be step1-attempt1, got %s", order[0])
+	}
+	if order[1] != "step1-attempt2" {
+		t.Errorf("expected second execution to be step1-attempt2, got %s (inversion occurred!)", order[1])
+	}
+	if order[2] != "step2" {
+		t.Errorf("expected third execution to be step2, got %s", order[2])
+	}
+}

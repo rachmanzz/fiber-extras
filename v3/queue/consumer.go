@@ -18,8 +18,9 @@ var (
 )
 
 type groupLockEntry struct {
-	mu   sync.Mutex
-	refs int
+	mu           sync.Mutex
+	refs         int
+	blockedUntil time.Time
 }
 
 type pendingRetry struct {
@@ -301,6 +302,26 @@ func (c *Consumer) fetchAndProcess() int {
 				return mi.GroupOrder < mj.GroupOrder
 			})
 
+			c.groupMu.Lock()
+			blockedUntil := entry.blockedUntil
+			c.groupMu.Unlock()
+
+			if waitTime := time.Until(blockedUntil); waitTime > 0 {
+				for _, item := range ordered {
+					if item.Message == nil {
+						_ = c.driver.Nack(settleCtx, item, errors.New("group quarantined"))
+						continue
+					}
+					if delayErr := c.delayDelivery(settleCtx, item, waitTime, fmt.Errorf("group %q quarantined until retry backoff expires (%v remaining)", gID, waitTime)); delayErr != nil {
+						c.logger.Error("failed to delay quarantined group member",
+							"topic", item.Message.Topic, "msg_id", item.Message.ID, "group", gID, "error", delayErr,
+						)
+						_ = c.driver.Nack(settleCtx, item, delayErr)
+					}
+				}
+				return nil
+			}
+
 			for idx, item := range ordered {
 				d := item
 				m := d.Message
@@ -309,7 +330,7 @@ func (c *Consumer) fetchAndProcess() int {
 				}
 				handler, exists := c.router.Get(m.Topic)
 				if !exists {
-					c.handleGroupFailure(settleCtx, ordered, idx, ErrNoHandlerFound)
+					c.handleGroupFailure(settleCtx, entry, ordered, idx, ErrNoHandlerFound)
 					break
 				}
 
@@ -344,7 +365,7 @@ func (c *Consumer) fetchAndProcess() int {
 				}
 
 				if handlerErr != nil {
-					c.handleGroupFailure(settleCtx, ordered, idx, handlerErr)
+					c.handleGroupFailure(settleCtx, entry, ordered, idx, handlerErr)
 					break
 				}
 				if err := c.driver.Ack(settleCtx, d); err != nil {
@@ -361,7 +382,7 @@ func (c *Consumer) fetchAndProcess() int {
 			c.inFlight.Done()
 			c.groupMu.Lock()
 			entry.refs--
-			if entry.refs <= 0 {
+			if entry.refs <= 0 && (entry.blockedUntil.IsZero() || time.Now().After(entry.blockedUntil)) {
 				delete(c.groupLocks, gID)
 			}
 			c.groupMu.Unlock()
@@ -388,6 +409,8 @@ func (c *Consumer) acquireGroupLock(gid string) *groupLockEntry {
 	if !ok {
 		l = &groupLockEntry{}
 		c.groupLocks[gid] = l
+	} else if !l.blockedUntil.IsZero() && time.Now().After(l.blockedUntil) {
+		l.blockedUntil = time.Time{}
 	}
 	l.refs++
 	return l
@@ -395,17 +418,29 @@ func (c *Consumer) acquireGroupLock(gid string) *groupLockEntry {
 
 // releaseGroupLock unlocks the group mutex and cleans up the map entry when all referencing tasks finish.
 func (c *Consumer) releaseGroupLock(gid string, entry *groupLockEntry) {
-	entry.mu.Unlock()
-
 	c.groupMu.Lock()
-	defer c.groupMu.Unlock()
 	entry.refs--
+	now := time.Now()
 	if entry.refs <= 0 {
-		delete(c.groupLocks, gid)
+		if entry.blockedUntil.IsZero() || !entry.blockedUntil.After(now) {
+			delete(c.groupLocks, gid)
+		} else {
+			quarantineRemaining := entry.blockedUntil.Sub(now)
+			time.AfterFunc(quarantineRemaining, func() {
+				c.groupMu.Lock()
+				defer c.groupMu.Unlock()
+				if c.groupLocks[gid] == entry && entry.refs <= 0 && time.Now().After(entry.blockedUntil) {
+					delete(c.groupLocks, gid)
+				}
+			})
+		}
 	}
+	c.groupMu.Unlock()
+
+	entry.mu.Unlock()
 }
 
-func (c *Consumer) handleGroupFailure(ctx context.Context, ordered []*Delivery, failedIdx int, reason error) {
+func (c *Consumer) handleGroupFailure(ctx context.Context, entry *groupLockEntry, ordered []*Delivery, failedIdx int, reason error) {
 	d := ordered[failedIdx]
 	m := d.Message
 	retried, backoff, err := c.handleFailure(ctx, d, reason)
@@ -413,6 +448,16 @@ func (c *Consumer) handleGroupFailure(ctx context.Context, ordered []*Delivery, 
 		c.logger.Error("failed to settle group message after failure",
 			"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
 		)
+	}
+
+	if entry != nil {
+		c.groupMu.Lock()
+		if retried {
+			entry.blockedUntil = time.Now().Add(backoff)
+		} else {
+			entry.blockedUntil = time.Time{}
+		}
+		c.groupMu.Unlock()
 	}
 
 	remaining := ordered[failedIdx+1:]

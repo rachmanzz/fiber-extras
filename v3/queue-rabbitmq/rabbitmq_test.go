@@ -1,6 +1,7 @@
 package queuerabbitmq_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/rachmanzz/gosuite/v3/queue"
@@ -65,5 +66,8 @@ func TestRabbitMQAdapter_NilMessageRejected(t *testing.T) {
 func TestRabbitMQAdapter_ErrDeliveryLostExported(t *testing.T) {
 	if queuerabbitmq.ErrDeliveryLost == nil {
 		t.Fatal("expected ErrDeliveryLost to be non-nil")
+	}
+	if !errors.Is(queuerabbitmq.ErrDeliveryLost, queue.ErrDeliveryLost) {
+		t.Fatalf("expected queuerabbitmq.ErrDeliveryLost to alias queue.ErrDeliveryLost")
 	}
 }

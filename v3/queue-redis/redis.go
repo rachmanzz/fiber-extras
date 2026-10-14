@@ -17,7 +17,7 @@ var ErrNilMessage = errors.New("queue-redis: cannot enqueue nil message")
 // ErrDeliveryLost is returned when a delivery token no longer owns its in-flight lease,
 // either because the visibility timeout expired and the message was reclaimed by another
 // worker, or because it was already settled.
-var ErrDeliveryLost = errors.New("queue-redis: delivery is no longer owned (lease expired or already settled)")
+var ErrDeliveryLost = queue.ErrDeliveryLost
 
 type deliveryClaim struct {
 	id    string

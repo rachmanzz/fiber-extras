@@ -113,5 +113,8 @@ func TestPostgresDriver_ErrDeliveryLostExported(t *testing.T) {
 	if queuepostgres.ErrDeliveryLost == nil {
 		t.Fatal("expected ErrDeliveryLost to be non-nil")
 	}
+	if !errors.Is(queuepostgres.ErrDeliveryLost, queue.ErrDeliveryLost) {
+		t.Fatalf("expected queuepostgres.ErrDeliveryLost to alias queue.ErrDeliveryLost")
+	}
 }
 

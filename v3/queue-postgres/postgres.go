@@ -364,7 +364,7 @@ func (p *PostgresDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) 
 
 // ErrDeliveryLost is returned when a delivery token no longer owns its row,
 // e.g. the lease expired and another worker already reclaimed it.
-var ErrDeliveryLost = errors.New("queue-postgres: delivery is no longer owned (lease expired or already settled)")
+var ErrDeliveryLost = queue.ErrDeliveryLost
 
 // ErrNilDelivery is returned when Ack/Nack/Reenqueue is called with a nil
 // delivery or a delivery that carries no token, surfacing a caller bug instead

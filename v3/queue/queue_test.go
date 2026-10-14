@@ -383,3 +383,10 @@ func TestQueue_NilMessageRejected(t *testing.T) {
 		t.Fatalf("mem.EnqueueAt(nil): expected ErrNilMessage, got %v", err)
 	}
 }
+
+func TestQueue_ErrDeliveryLostExported(t *testing.T) {
+	if queue.ErrDeliveryLost == nil {
+		t.Fatal("expected queue.ErrDeliveryLost to be non-nil")
+	}
+}
+

@@ -2,6 +2,7 @@ package queueredis_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -113,6 +114,9 @@ func TestRedisDriver_NilMessageRejected(t *testing.T) {
 func TestRedisDriver_ErrDeliveryLostExported(t *testing.T) {
 	if queueredis.ErrDeliveryLost == nil {
 		t.Fatal("expected ErrDeliveryLost to be non-nil")
+	}
+	if !errors.Is(queueredis.ErrDeliveryLost, queue.ErrDeliveryLost) {
+		t.Fatalf("expected queueredis.ErrDeliveryLost to alias queue.ErrDeliveryLost")
 	}
 }
 

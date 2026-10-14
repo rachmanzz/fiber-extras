@@ -11,6 +11,7 @@ var (
 	ErrDriverNotConfigured = errors.New("queue: driver is not configured")
 	ErrConsumerNotRunning  = errors.New("queue: consumer is not running")
 	ErrNilMessage          = errors.New("queue: cannot enqueue nil message")
+	ErrDeliveryLost        = errors.New("queue: delivery is no longer owned (lease expired or connection lost)")
 )
 
 // Producer defines the interface for enqueuing messages from services.
