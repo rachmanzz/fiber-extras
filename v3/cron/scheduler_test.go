@@ -322,3 +322,68 @@ func TestScheduler_StopCancelsTaskContext(t *testing.T) {
 		t.Fatal("expected task to receive context cancellation on Stop")
 	}
 }
+
+func TestScheduler_RestartableAfterStop(t *testing.T) {
+	s := NewScheduler(WithLogger(NopLogger()), WithSeconds(true))
+	run1Started := make(chan struct{})
+	run2Started := make(chan struct{})
+	var isRun2 atomic.Bool
+
+	task := &contextAwareTask{
+		schedule: "* * * * * *",
+		execute: func(ctx context.Context) error {
+			if ctx.Err() != nil {
+				t.Errorf("task executed with already-cancelled context: %v", ctx.Err())
+				return ctx.Err()
+			}
+			if !isRun2.Load() {
+				select {
+				case <-run1Started:
+				default:
+					close(run1Started)
+				}
+			} else {
+				select {
+				case <-run2Started:
+				default:
+					close(run2Started)
+				}
+			}
+			return nil
+		},
+	}
+
+	if err := s.Register(task); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// 1. First Start & Stop
+	s.Start()
+	select {
+	case <-run1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+	if err := s.Stop(ctx1); err != nil {
+		t.Fatalf("first stop: %v", err)
+	}
+
+	// 2. Restart Start
+	isRun2.Store(true)
+	s.Start()
+	select {
+	case <-run2Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second run did not start after restart")
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if err := s.Stop(ctx2); err != nil {
+		t.Fatalf("second stop: %v", err)
+	}
+}
+

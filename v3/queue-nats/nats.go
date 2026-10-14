@@ -290,6 +290,11 @@ func decodeNATSMsg(rawMsg *nats.Msg) (*queue.Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", hdrAttempt, err)
 	}
+	if meta, mErr := rawMsg.Metadata(); mErr == nil && meta.NumDelivered > 1 {
+		// When JetStream redelivers via Nak/NakWithDelay, the header reflects the
+		// initial attempt (0). Derive current attempt from JetStream delivery metadata.
+		attempt = int(meta.NumDelivered) - 1
+	}
 	maxAttempts, err := strconv.Atoi(rawMsg.Header.Get(hdrMaxAttempt))
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", hdrMaxAttempt, err)
@@ -428,6 +433,9 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 // acknowledges the current delivery. Publishing before the Ack removes the
 // ack-then-enqueue crash window: if the process dies in between, the original
 // delivery is still unacked and is redelivered by JetStream instead of being lost.
+// Reenqueue reschedules the message using JetStream native NakWithDelay if delay > 0,
+// or republishes and acknowledges. Using native NakWithDelay delegates delay scheduling
+// directly to the JetStream server, avoiding in-process timers and AckWait expiration.
 func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *queue.Message, at time.Time) error {
 	if d == nil || d.Token == nil {
 		return nil
@@ -442,6 +450,11 @@ func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *que
 
 	delay := time.Until(at)
 	if delay > 0 {
+		if natsMsg, ok := d.Token.(*nats.Msg); ok {
+			return natsMsg.NakWithDelay(delay)
+		}
+
+		// Fallback for non-JetStream or mock tokens: track timer and schedule delayed re-enqueue
 		var timer *time.Timer
 		timer = time.AfterFunc(delay, func() {
 			n.mu.Lock()
@@ -451,9 +464,6 @@ func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *que
 			if closed {
 				return
 			}
-			// Detach from the original request context's cancellation/deadline
-			// but keep its values, so a cancelled caller does not abort the
-			// deferred re-enqueue and ack.
 			cbCtx := context.WithoutCancel(ctx)
 			_ = n.Enqueue(cbCtx, msg)
 			_ = n.Ack(cbCtx, d)

@@ -72,8 +72,9 @@ type Scheduler struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 
-	specMu sync.Mutex
-	specs  []string
+	specMu  sync.Mutex
+	specs   []string
+	runners []*TaskRunner
 }
 
 // cronLogger adapts the module Logger to the robfig/cron Logger interface,
@@ -203,10 +204,14 @@ func (s *Scheduler) Register(task Task) error {
 		spec = fmt.Sprintf("CRON_TZ=%s %s", tzPrefix, spec)
 	}
 
-	id, err := s.AddJob(spec, NewTaskRunner(task, s.ctx))
+	runner := NewTaskRunner(task, s.ctx)
+	id, err := s.AddJob(spec, runner)
 	if err != nil {
 		return err
 	}
+	s.specMu.Lock()
+	s.runners = append(s.runners, runner)
+	s.specMu.Unlock()
 	s.logger.Info("cron task registered", "spec", spec, "entry", id)
 	return nil
 }
@@ -223,7 +228,18 @@ func (s *Scheduler) RegisterAll(tasks ...Task) error {
 }
 
 // Start begins scheduling in a background goroutine.
+// If the scheduler was previously stopped and its context cancelled, Start renews
+// the context and propagates it to all registered task runners.
 func (s *Scheduler) Start() {
+	s.specMu.Lock()
+	if s.ctx != nil && s.ctx.Err() != nil {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+		for _, runner := range s.runners {
+			runner.SetContext(s.ctx)
+		}
+	}
+	s.specMu.Unlock()
+
 	s.cronEngine.Start()
 	s.logger.Info("cron scheduler started", "timezone", s.location.String())
 }
