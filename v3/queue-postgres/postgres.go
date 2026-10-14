@@ -150,7 +150,7 @@ func (p *PostgresDriver) EnsureTable(ctx context.Context) error {
 	ALTER TABLE %s ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
 	ALTER TABLE %s ADD COLUMN IF NOT EXISTS acked_at TIMESTAMPTZ;
 	CREATE INDEX IF NOT EXISTS idx_%s_priority ON %s (status, process_at ASC, priority DESC, created_at ASC);
-	CREATE INDEX IF NOT EXISTS idx_%s_active ON %s (priority DESC, group_order ASC, created_at ASC) WHERE status IN ('pending', 'processing');
+	CREATE INDEX IF NOT EXISTS idx_%s_active ON %s (priority DESC, created_at ASC, id ASC) WHERE status IN ('pending', 'processing');
 	CREATE INDEX IF NOT EXISTS idx_%s_lease ON %s (status, lease_until);
 	CREATE INDEX IF NOT EXISTS idx_%s_acked ON %s (status, acked_at);
 	`, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName)
@@ -296,7 +296,7 @@ func (p *PostgresDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) 
 		WHERE status IN ('pending', 'processing')
 		AND process_at <= now()
 		AND (lease_until IS NULL OR lease_until < now())
-		ORDER BY priority DESC, group_order ASC, created_at ASC
+		ORDER BY priority DESC, created_at ASC, id ASC
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED
 	)
@@ -417,7 +417,11 @@ func (p *PostgresDriver) Reenqueue(ctx context.Context, d *queue.Delivery, msg *
 // Ack marks the message as completed. The row is soft-deleted (status 'acked')
 // rather than removed so Replay can still surface processed messages for
 // auditing/recovery; use PurgeAcked to reclaim storage. Ack only affects the row
-// while the caller still owns it (status 'processing' and matching lease).
+// Ack marks the message as completed. The row is soft-deleted (status 'acked')
+// rather than removed so Replay can still surface processed messages for
+// auditing/recovery; use PurgeAcked to reclaim storage. Ack only affects the row
+// while the caller still owns it (status 'processing' and matching lease);
+// otherwise ErrDeliveryLost is returned.
 func (p *PostgresDriver) Ack(ctx context.Context, d *queue.Delivery) error {
 	c, err := deliveryClaim(d)
 	if err != nil {
@@ -427,8 +431,14 @@ func (p *PostgresDriver) Ack(ctx context.Context, d *queue.Delivery) error {
 		return nil
 	}
 	query := fmt.Sprintf("UPDATE %s SET status = 'acked', lease_until = NULL, acked_at = now(), updated_at = now() WHERE id = $1 AND status = 'processing' AND lease_until = $2", p.tableName)
-	_, err = p.pool.Exec(ctx, query, c.id, c.lease)
-	return err
+	tag, err := p.pool.Exec(ctx, query, c.id, c.lease)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrDeliveryLost
+	}
+	return nil
 }
 
 // PurgeAcked permanently deletes completed (acked) rows acked before the given
@@ -444,7 +454,8 @@ func (p *PostgresDriver) PurgeAcked(ctx context.Context, before time.Time) (int6
 }
 
 // Nack releases the message back to 'pending' for redelivery and clears its
-// lease. Like Ack it only affects the row while the caller still owns it.
+// lease. Like Ack it only affects the row while the caller still owns it;
+// otherwise ErrDeliveryLost is returned.
 func (p *PostgresDriver) Nack(ctx context.Context, d *queue.Delivery, reason error) error {
 	c, err := deliveryClaim(d)
 	if err != nil {
@@ -454,8 +465,14 @@ func (p *PostgresDriver) Nack(ctx context.Context, d *queue.Delivery, reason err
 		return nil
 	}
 	query := fmt.Sprintf("UPDATE %s SET status = 'pending', lease_until = NULL, updated_at = now() WHERE id = $1 AND status = 'processing' AND lease_until = $2", p.tableName)
-	_, err = p.pool.Exec(ctx, query, c.id, c.lease)
-	return err
+	tag, err := p.pool.Exec(ctx, query, c.id, c.lease)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrDeliveryLost
+	}
+	return nil
 }
 
 // Close gracefully closes the driver.

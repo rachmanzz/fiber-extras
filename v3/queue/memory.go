@@ -110,6 +110,9 @@ func (m *MemoryDriver) Dequeue(ctx context.Context, req DequeueRequest) ([]*Deli
 			Token:   m.messages[i].ID,
 		}
 	}
+	for i := 0; i < count; i++ {
+		m.messages[i] = nil
+	}
 	m.messages = m.messages[count:]
 
 	return deliveries, nil

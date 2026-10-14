@@ -41,8 +41,8 @@ type Engine struct {
 }
 
 var (
-	globalEngine   *Engine
-	globalEngineMu sync.RWMutex
+	globalDispatcher   Dispatcher
+	globalDispatcherMu sync.RWMutex
 )
 
 // NewEngine creates a new unstarted Worker Engine with the provided configuration and options.
@@ -269,8 +269,8 @@ func (e *Engine) Shutdown() error {
 
 // InitGlobal initializes, starts, and sets the global worker engine.
 func InitGlobal(cfg ...Config) *Engine {
-	globalEngineMu.Lock()
-	defer globalEngineMu.Unlock()
+	globalDispatcherMu.Lock()
+	defer globalDispatcherMu.Unlock()
 
 	c := DefaultConfig()
 	if len(cfg) > 0 {
@@ -279,42 +279,39 @@ func InitGlobal(cfg ...Config) *Engine {
 
 	engine := NewEngine(c)
 	engine.Start()
-	globalEngine = engine
+	globalDispatcher = engine
 	return engine
 }
 
 // GetDispatcher returns the global dispatcher singleton.
 // If not yet initialized, it lazily initializes an engine with DefaultConfig.
 func GetDispatcher() Dispatcher {
-	globalEngineMu.RLock()
-	if globalEngine != nil {
-		defer globalEngineMu.RUnlock()
-		return globalEngine
+	globalDispatcherMu.RLock()
+	if globalDispatcher != nil {
+		defer globalDispatcherMu.RUnlock()
+		return globalDispatcher
 	}
-	globalEngineMu.RUnlock()
+	globalDispatcherMu.RUnlock()
 
 	// Upgrade to a write lock and re-check: two concurrent callers may both
 	// observe nil, but only the first must create the engine, otherwise the
 	// engine of the loser leaks (its worker goroutines keep running).
-	globalEngineMu.Lock()
-	defer globalEngineMu.Unlock()
+	globalDispatcherMu.Lock()
+	defer globalDispatcherMu.Unlock()
 
-	if globalEngine == nil {
+	if globalDispatcher == nil {
 		engine := NewEngine(DefaultConfig())
 		engine.Start()
-		globalEngine = engine
+		globalDispatcher = engine
 	}
-	return globalEngine
+	return globalDispatcher
 }
 
 // SetGlobalDispatcher sets or overrides the global dispatcher (useful for mocking in tests).
 func SetGlobalDispatcher(d Dispatcher) {
-	globalEngineMu.Lock()
-	defer globalEngineMu.Unlock()
-
-	if eng, ok := d.(*Engine); ok {
-		globalEngine = eng
-	}
+	globalDispatcherMu.Lock()
+	defer globalDispatcherMu.Unlock()
+	globalDispatcher = d
 }
 
 // Dispatch submits a task to the global worker dispatcher.
@@ -329,12 +326,17 @@ func ExecuteSync(ctx context.Context, task Task) error {
 
 // Shutdown gracefully stops the global worker engine if initialized.
 func Shutdown() error {
-	globalEngineMu.Lock()
-	defer globalEngineMu.Unlock()
+	globalDispatcherMu.Lock()
+	defer globalDispatcherMu.Unlock()
 
-	if globalEngine != nil {
-		err := globalEngine.Shutdown()
-		globalEngine = nil
+	if globalDispatcher != nil {
+		var err error
+		if eng, ok := globalDispatcher.(*Engine); ok {
+			err = eng.Shutdown()
+		} else if closer, ok := globalDispatcher.(interface{ Shutdown() error }); ok {
+			err = closer.Shutdown()
+		}
+		globalDispatcher = nil
 		return err
 	}
 	return nil

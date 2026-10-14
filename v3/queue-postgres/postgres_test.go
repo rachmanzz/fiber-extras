@@ -108,3 +108,10 @@ func TestPostgresDriver_NilMessageRejected(t *testing.T) {
 		t.Fatalf("EnqueueAt(nil): expected ErrNilMessage, got %v", err)
 	}
 }
+
+func TestPostgresDriver_ErrDeliveryLostExported(t *testing.T) {
+	if queuepostgres.ErrDeliveryLost == nil {
+		t.Fatal("expected ErrDeliveryLost to be non-nil")
+	}
+}
+
