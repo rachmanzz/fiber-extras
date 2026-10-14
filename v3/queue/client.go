@@ -83,14 +83,19 @@ func SetDriver(d Driver) {
 // Reset clears all registered drivers, active consumers, and handlers. Useful for testing.
 func Reset() {
 	globalManager.mu.Lock()
-	defer globalManager.mu.Unlock()
+	consumers := make([]*Consumer, 0, len(globalManager.consumers))
 	for _, c := range globalManager.consumers {
-		c.Stop()
+		consumers = append(consumers, c)
 	}
 	globalManager.consumers = make(map[string]*Consumer)
 	globalManager.drivers = make(map[string]Driver)
 	globalManager.defaultDriver = nil
 	globalManager.router = NewRouter()
+	globalManager.mu.Unlock()
+
+	for _, c := range consumers {
+		c.Stop()
+	}
 }
 
 // Attach plugs an Adapter into the active Queue Core.
@@ -226,10 +231,14 @@ func StartConsumer(opts ...ConsumerOption) (*Consumer, error) {
 // StopConsumer gracefully shuts down all active consumers.
 func StopConsumer() {
 	globalManager.mu.Lock()
-	defer globalManager.mu.Unlock()
-
+	consumers := make([]*Consumer, 0, len(globalManager.consumers))
 	for name, c := range globalManager.consumers {
-		c.Stop()
+		consumers = append(consumers, c)
 		delete(globalManager.consumers, name)
+	}
+	globalManager.mu.Unlock()
+
+	for _, c := range consumers {
+		c.Stop()
 	}
 }

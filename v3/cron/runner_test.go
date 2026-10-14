@@ -139,3 +139,93 @@ func TestRunner_ShutdownTimeoutSurfacesError(t *testing.T) {
 		t.Fatalf("post-shutdown hooks ran %d times, want 1 even on timeout", n)
 	}
 }
+
+func TestRunner_ContextCancellation(t *testing.T) {
+	s := NewScheduler(WithLogger(NopLogger()))
+	r := NewRunner(s, WithShutdownTimeout(2*time.Second))
+
+	var cleaned atomic.Int64
+	r.RegisterPostShutdown(func() error {
+		cleaned.Add(1)
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error on context cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not terminate upon context cancellation")
+	}
+
+	if cleaned.Load() != 1 {
+		t.Fatalf("post-shutdown hooks ran %d times, want 1", cleaned.Load())
+	}
+}
+
+func TestRunner_ProgrammaticStop(t *testing.T) {
+	s := NewScheduler(WithLogger(NopLogger()))
+	r := NewRunner(s, WithShutdownTimeout(2*time.Second))
+
+	var cleaned atomic.Int64
+	r.RegisterPostShutdown(func() error {
+		cleaned.Add(1)
+		return nil
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	r.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error on programmatic stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner did not terminate upon programmatic Stop()")
+	}
+
+	if cleaned.Load() != 1 {
+		t.Fatalf("post-shutdown hooks ran %d times, want 1", cleaned.Load())
+	}
+}
+
+func TestRunner_EmptySignals(t *testing.T) {
+	s := NewScheduler(WithLogger(NopLogger()))
+	// Configure with empty signals list.
+	// Previously this deadlocked on <-sigCh. Now it safely shuts down via Stop().
+	r := NewRunner(s, WithSignals(), WithShutdownTimeout(2*time.Second))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	r.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error on empty signals stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner deadlocked when configured with empty signals")
+	}
+}
+

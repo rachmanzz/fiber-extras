@@ -703,3 +703,159 @@ func TestConsumer_StopWaitsForInFlightTaskAck(t *testing.T) {
 	}
 }
 
+func TestClient_StopConsumerNoDeadlockOnInFlightDispatch(t *testing.T) {
+	queue.Reset()
+	defer queue.Reset()
+
+	driver := queue.NewMemoryDriver()
+	queue.SetDriver(driver)
+
+	taskStarted := make(chan struct{})
+	dispatchDone := make(chan struct{})
+	var chainedDispatched atomic.Bool
+
+	queue.RegisterHandler("task.parent", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		close(taskStarted)
+		// Wait slightly to let StopConsumer begin executing
+		time.Sleep(50 * time.Millisecond)
+		// Chain dispatch using global queue API while StopConsumer is running
+		err := queue.Dispatch(ctx, "task.child", map[string]string{"foo": "bar"})
+		if err == nil {
+			chainedDispatched.Store(true)
+		}
+		close(dispatchDone)
+		return nil
+	})
+
+	c, err := queue.StartConsumer(queue.WithPollInterval(2 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("start consumer: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil consumer")
+	}
+
+	if err := queue.Dispatch(context.Background(), "task.parent", map[string]string{"init": "yes"}); err != nil {
+		t.Fatalf("dispatch parent: %v", err)
+	}
+
+	<-taskStarted
+
+	// Call StopConsumer() concurrently.
+	// Previously this deadlocked because StopConsumer held globalManager.mu while waiting
+	// for inFlight tasks, and the task called queue.Dispatch which required globalManager.mu.RLock().
+	stopDone := make(chan struct{})
+	go func() {
+		queue.StopConsumer()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queue.StopConsumer() deadlocked waiting for in-flight task that called queue.Dispatch()")
+	}
+
+	<-dispatchDone
+	if !chainedDispatched.Load() {
+		t.Fatal("expected chained task to be successfully dispatched during consumer stop")
+	}
+}
+
+type mockBasicDriver struct {
+	mu       sync.Mutex
+	enqueued []*queue.Message
+	acked    []*queue.Delivery
+}
+
+func (m *mockBasicDriver) Name() string { return "basic" }
+func (m *mockBasicDriver) Capabilities() queue.Capabilities { return queue.Capabilities{} }
+func (m *mockBasicDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enqueued = append(m.enqueued, msg)
+	return nil
+}
+func (m *mockBasicDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]*queue.Delivery, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.enqueued) == 0 {
+		return nil, nil
+	}
+	msg := m.enqueued[0]
+	m.enqueued = m.enqueued[1:]
+	return []*queue.Delivery{{Message: msg, Token: msg.ID}}, nil
+}
+func (m *mockBasicDriver) Ack(ctx context.Context, d *queue.Delivery) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acked = append(m.acked, d)
+	return nil
+}
+func (m *mockBasicDriver) Nack(ctx context.Context, d *queue.Delivery, reason error) error {
+	return nil
+}
+func (m *mockBasicDriver) Close() error {
+	return nil
+}
+
+func TestConsumer_StopFlushesPendingRetryMessages(t *testing.T) {
+	driver := &mockBasicDriver{}
+	router := queue.NewRouter()
+
+	retryScheduled := make(chan struct{}, 1)
+	var attempts atomic.Int32
+
+	router.Register("task.retry", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		attempts.Add(1)
+		select {
+		case retryScheduled <- struct{}{}:
+		default:
+		}
+		// Return a retryable error so consumer schedules a retry
+		return errors.New("transient error")
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 2, TaskQueueSize: 8})
+	engine.Start()
+	defer engine.Shutdown()
+
+	// Configure retry policy with a long backoff (e.g. 10s)
+	policy := queue.RetryPolicy{
+		MaxAttempts: 3,
+		Initial:     10 * time.Second,
+		Max:         10 * time.Second,
+		Multiplier:  2.0,
+	}
+
+	consumer := queue.NewConsumer(driver, router, engine,
+		queue.WithPollInterval(2*time.Millisecond),
+		queue.WithRetryPolicy(policy),
+	)
+	consumer.Start()
+
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("task.retry", []byte("payload")))
+
+	// Wait for handler to fail and schedule retry timer
+	<-retryScheduled
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop consumer while retry timer is pending (backoff is 10s, far in future).
+	// Stop() must flush the pending retry message into the driver so it's not lost!
+	consumer.Stop()
+
+	// Verify driver has the flushed message ready
+	deliveries, err := driver.Dequeue(context.Background(), queue.DequeueRequest{BatchSize: 10})
+	if err != nil {
+		t.Fatalf("dequeue from driver: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 flushed retry message in driver, got %d", len(deliveries))
+	}
+	if deliveries[0].Message.Attempt != 1 {
+		t.Fatalf("expected flushed message attempt 1, got %d", deliveries[0].Message.Attempt)
+	}
+}
+
+
+

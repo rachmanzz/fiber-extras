@@ -2,21 +2,26 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
+
+// ErrRunnerAlreadyRunning is returned when Run() is called on an already active Runner.
+var ErrRunnerAlreadyRunning = errors.New("cron runner: already running")
 
 // Hook is a lifecycle callback executed by the Runner.
 type Hook func() error
 
 // Runner runs a Scheduler as a standalone process: it executes before-start
 // hooks, starts the scheduler, waits for an OS signal (default SIGINT and
-// SIGTERM), performs a graceful stop with a deadline, and then executes
-// post-shutdown hooks. It carries no dependency on any other module, so hosts
-// wire their own Execute logic into Tasks.
+// SIGTERM), context cancellation, or programmatic Stop(), performs a graceful
+// stop with a deadline, and then executes post-shutdown hooks. It carries no
+// dependency on any other module, so hosts wire their own Execute logic into Tasks.
 type Runner struct {
 	scheduler       *Scheduler
 	beforeStart     []Hook
@@ -24,6 +29,11 @@ type Runner struct {
 	shutdownTimeout time.Duration
 	signals         []os.Signal
 	logger          Logger
+
+	mu      sync.Mutex
+	running bool
+	stopped bool
+	stopCh  chan struct{}
 }
 
 // RunnerOption configures the Runner.
@@ -43,9 +53,7 @@ func WithShutdownTimeout(d time.Duration) RunnerOption {
 // (default SIGINT and SIGTERM).
 func WithSignals(sig ...os.Signal) RunnerOption {
 	return func(r *Runner) {
-		if len(sig) > 0 {
-			r.signals = sig
-		}
+		r.signals = sig
 	}
 }
 
@@ -56,6 +64,7 @@ func NewRunner(s *Scheduler, opts ...RunnerOption) *Runner {
 		shutdownTimeout: 10 * time.Second,
 		signals:         DefaultSignals(),
 		logger:          DefaultLogger(),
+		stopCh:          make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -83,8 +92,31 @@ func (r *Runner) RegisterPostShutdown(h Hook) {
 }
 
 // Run executes the full lifecycle and blocks until a termination signal
-// arrives (or the process context ends). It returns nil on a clean shutdown.
-func (r *Runner) Run() error {
+// arrives, the provided context ends, or Stop() is called. It returns nil on a clean shutdown.
+func (r *Runner) Run(ctx ...context.Context) error {
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return ErrRunnerAlreadyRunning
+	}
+	r.running = true
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.running = false
+		r.stopped = false
+		r.stopCh = make(chan struct{})
+		r.mu.Unlock()
+	}()
+
+	var parentCtx context.Context
+	if len(ctx) > 0 && ctx[0] != nil {
+		parentCtx = ctx[0]
+	} else {
+		parentCtx = context.Background()
+	}
+
 	for _, h := range r.beforeStart {
 		if err := h(); err != nil {
 			r.logger.Error("cron runner before-start hook failed", "error", err)
@@ -101,12 +133,18 @@ func (r *Runner) Run() error {
 
 	r.scheduler.Start()
 
-	sig := <-sigCh
-	r.logger.Info("cron runner received signal, shutting down", "signal", fmt.Sprint(sig))
+	select {
+	case <-parentCtx.Done():
+		r.logger.Info("cron runner context cancelled, shutting down")
+	case sig := <-sigCh:
+		r.logger.Info("cron runner received signal, shutting down", "signal", fmt.Sprint(sig))
+	case <-r.stopCh:
+		r.logger.Info("cron runner stop requested programmatically")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
+	stopCtx, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
 	defer cancel()
-	stopErr := r.scheduler.Stop(ctx)
+	stopErr := r.scheduler.Stop(stopCtx)
 	r.runPostShutdownHooks()
 
 	if stopErr != nil {
@@ -117,6 +155,16 @@ func (r *Runner) Run() error {
 		return stopErr
 	}
 	return nil
+}
+
+// Stop programmatically signals the runner to shut down gracefully.
+func (r *Runner) Stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.stopped {
+		r.stopped = true
+		close(r.stopCh)
+	}
 }
 
 func (r *Runner) runPostShutdownHooks() {

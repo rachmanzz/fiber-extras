@@ -351,14 +351,22 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		return nil, err
 	}
 
+	batchSize := req.BatchSize
+	if batchSize <= 0 {
+		batchSize = 20
+	}
+
+	maxMigrate := int64(batchSize * 5)
+	if maxMigrate > 500 {
+		maxMigrate = 500
+	}
+
 	// 1. Migrate any matured delayed messages from delayedKey to queueKey.
-	// The migration runs in a transaction (MULTI/EXEC) so a matured member is
-	// never removed from the delayed set without also appearing in the ready
-	// set, and errors are surfaced instead of silently swallowed. Each message's
-	// payload is read first so its original priority is preserved.
+	// Bounded with Count to prevent blocking Redis single-threaded event loop during spikes.
 	delayedMembers, err := r.client.ZRangeByScore(ctx, r.delayedKey(), &redis.ZRangeBy{
-		Min: "-inf",
-		Max: fmt.Sprintf("%f", nowScore),
+		Min:   "-inf",
+		Max:   fmt.Sprintf("%f", nowScore),
+		Count: maxMigrate,
 	}).Result()
 	if err != nil && err != redis.Nil {
 		return nil, err
@@ -395,11 +403,6 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 			[]string{r.delayedKey(), r.queueKey()}, args...).Result(); err != nil {
 			return nil, err
 		}
-	}
-
-	batchSize := req.BatchSize
-	if batchSize <= 0 {
-		batchSize = 20
 	}
 
 	// 2. Atomically pop highest-priority members into the in-flight ZSet with a lease.

@@ -39,7 +39,7 @@ type Consumer struct {
 	closeOnce        sync.Once
 	groupLocks       map[string]*groupLockEntry
 	groupMu          sync.Mutex
-	retryTimers      map[*time.Timer]struct{}
+	retryTimers      map[*time.Timer]*Message
 	inFlight         sync.WaitGroup
 }
 
@@ -102,7 +102,7 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 		ctx:              ctx,
 		cancel:           cancel,
 		groupLocks:       make(map[string]*groupLockEntry),
-		retryTimers:      make(map[*time.Timer]struct{}),
+		retryTimers:      make(map[*time.Timer]*Message),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -479,7 +479,7 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 		}
 		_ = c.driver.Enqueue(context.Background(), m)
 	})
-	c.retryTimers[timer] = struct{}{}
+	c.retryTimers[timer] = m
 	c.mu.Unlock()
 
 	if err := c.driver.Ack(ctx, d); err != nil {
@@ -533,11 +533,21 @@ func (c *Consumer) Stop() {
 		return
 	}
 	c.closed = true
-	for t := range c.retryTimers {
+	var pending []*Message
+	for t, m := range c.retryTimers {
 		t.Stop()
+		if m != nil {
+			pending = append(pending, m)
+		}
 	}
 	c.retryTimers = nil
 	c.mu.Unlock()
+
+	// Flush any pending retry messages that were already Acked from the broker
+	// so they are not permanently lost on consumer shutdown.
+	for _, m := range pending {
+		_ = c.driver.Enqueue(context.Background(), m)
+	}
 
 	if c.cancel != nil {
 		c.cancel()
