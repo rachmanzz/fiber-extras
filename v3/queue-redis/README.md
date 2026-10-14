@@ -74,7 +74,7 @@ The default lease is `DefaultVisibilityTimeout` (30 seconds). Keep it comfortabl
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).
 
 ---
 

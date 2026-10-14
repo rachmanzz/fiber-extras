@@ -1,12 +1,12 @@
-# Worker Engine for Go & Fiber v3
+# Worker Engine for Go
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/worker.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/worker)
 
-High-performance background worker engine and task concurrency orchestrator for Go and [Fiber v3](https://github.com/gofiber/fiber), extracted and refined from production workloads.
+High-performance background worker engine and task concurrency orchestrator for Go, extracted and refined from real-world production workloads.
 
 Engineered around three core principles:
-1. **Pure Go Core (Zero External Dependencies)** — The core engine is built purely on Go's standard library (`sync`, `chan`, `context`, `log/slog`), making it suitable for CLI, HTTP servers, microservices, and background daemons alike.
-2. **First-Class [fiber-starter](https://github.com/rachmanzz/fiber-starter) Integration** — Features clean, direct lifecycle methods (`InitGlobal`, `Shutdown`) for effortless integration into Fiber v3 graceful shutdown without wrappers or boilerplate.
+1. **Pure Go Core (Zero External Dependencies)** — The core engine is built purely on Go's standard library (`sync`, `chan`, `context`, `log/slog`), making it suitable for CLI tools, HTTP servers, microservices, and background daemons alike.
+2. **Clean Lifecycle Integration** — Features clean, direct lifecycle methods (`InitGlobal`, `Shutdown`) for effortless integration into application graceful shutdown hooks without wrappers or boilerplate.
 3. **Resilient Parallelism (Sub-Worker Fan-Out & Panic Safety)** — Native support for parent-to-child task splitting with bounded semaphore throttling, isolated panic recovery per goroutine, and fail-fast context propagation.
 
 ---
@@ -31,9 +31,9 @@ go get github.com/rachmanzz/fiber-extras/v3/worker
 
 ---
 
-## 📖 Part 1: Usage in Pure Go
+## 📖 Part 1: Basic Usage
 
-You can use the worker engine in any Go application without Fiber:
+You can use the worker engine in any Go application:
 
 ```go
 package main
@@ -240,5 +240,5 @@ BenchmarkWorker_SubWorker_FanOut-8   	  612391	      3990 ns/op	     680 B/op	  
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).
 

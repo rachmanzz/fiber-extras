@@ -1,24 +1,27 @@
-# Fiber Extras
+# GoSuite
 
-A curated collection of modular extensions, middlewares, and utility packages for [Fiber v3](https://github.com/gofiber/fiber), inspired by [gofiber/contrib](https://github.com/gofiber/contrib).
+A curated collection of modular backend utilities, task concurrency engines, and queue orchestrators for Go.
 
-Designed from the ground up for high versatility: **fully compatible with pure Fiber v3 applications**, while offering **first-class adapters and specialized helpers for [fiber-starter](https://github.com/rachmanzz/fiber-starter)**.
+Designed to be **framework-agnostic** with **minimal external dependencies**—usable across standard Go services, web applications, background daemons, or standalone CLI workers.
+
+> [!NOTE]
+> This suite is under active development (**Beta / Alpha**). While core components originate from real-world usage, APIs and driver contracts are still stabilizing as feedback and test coverage expand.
 
 ---
 
 ## 🚀 Key Highlights
 
-- **Multi-Module Monorepo (Zero Bloat)**: Each extension lives in its own directory with a dedicated `go.mod`. You only import the dependencies your project actually uses.
-- **Dual Compatibility**:
-  - **Standard Fiber v3**: Idiomatic, zero-lock-in middleware and handlers adhering to core Fiber v3 standards.
-  - **Fiber-Starter Optimized**: Dedicated adapter functions and configs tailored to `fiber-starter` conventions (standardized JSON/MsgPack responses, centralized error handlers, and structured logging).
-- **Efficient & Type-Safe**: Minimal heap allocations on hot dispatch paths, clean configuration structs, and sensible defaults backed by automated benchmarks.
+- **Multi-Module Monorepo**: Each package lives in its own directory with an isolated `go.mod`. You only download the dependencies required for the specific drivers you use.
+- **Lean Core & Isolated Drivers**: Core engines keep external dependencies to a bare minimum, while broker adapters only pull their official, dedicated client SDKs.
+- **Framework-Agnostic**: No hard coupling to any specific web framework. Works seamlessly with standard Go (`net/http`), any router, or headless background workers.
+- **Transparent Maturity**: Explicitly tracks stability per package (`Beta` / `Alpha`) so you know which components are ready for staging tests and which are still evolving.
+- **Type-Safe & Predictable**: Focused configuration structs, sensible defaults, and memory-conscious dispatch paths verified by benchmarks.
 
 ---
 
 ## 🚦 Package Maturity & Stability Status
 
-Because `fiber-extras` was extracted from real-world production workloads into a standalone open-source library, stability stages are explicitly communicated:
+Because `gosuite` was extracted from real-world workloads into a modular open-source suite, stability stages are explicitly communicated:
 
 - **`🧪 Beta`**: Core architecture, APIs, unit tests, and benchmarks are complete and verified against real workloads. Ready for staging and production testing.
 - **`🌱 Alpha`**: Driver implementation and functional tests are complete, but awaiting extended high-concurrency production verification and stress testing.
@@ -63,8 +66,8 @@ This repository uses Go Workspaces (`go.work`) for seamless multi-module develop
 ### Clone the repository
 
 ```bash
-git clone https://github.com/rachmanzz/fiber-extras.git
-cd fiber-extras
+git clone https://github.com/rachmanzz/gosuite.git
+cd gosuite
 ```
 
 ### Initialize or synchronize workspace
@@ -118,7 +121,7 @@ Each adapter also has a dedicated CI workflow under `.github/workflows/` that pr
 
 ## 🤝 Contributing
 
-Contributions are warmly welcome! Whether you are proposing a new Fiber v3 extension or adding adapters for `fiber-starter`, feel free to open an issue or submit a pull request.
+Contributions are warmly welcome! Whether you are proposing a new module, queue driver, performance improvement, or bug fix, feel free to open an issue or submit a pull request.
 
 ---
 

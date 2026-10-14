@@ -1,4 +1,4 @@
-# Queue Core for Go & Fiber v3
+# Queue Core for Go
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue)
 
@@ -545,5 +545,5 @@ BenchmarkQueue_Dispatch_JSON-8           	 2691786	       985.3 ns/op	     378 B
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).
 

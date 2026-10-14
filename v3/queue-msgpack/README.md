@@ -143,4 +143,4 @@ BenchmarkQueue_Dispatch_Msgpack-8       	 1239858	      2009 ns/op	    1202 B/op
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).

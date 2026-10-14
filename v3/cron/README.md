@@ -1,4 +1,4 @@
-# fiber-extras v3/cron
+# GoSuite v3/cron
 
 Production-grade scheduler for Go, built on [robfig/cron/v3](https://github.com/robfig/cron/v3) with a
 Task contract, fluent schedule builders, panic recovery, skip-if-still-running protection, graceful
@@ -236,5 +236,5 @@ func main() {
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and
 is licensed under the [MIT License](../../LICENSE).

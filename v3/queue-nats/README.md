@@ -65,7 +65,7 @@ TEST_NATS_URL=nats://127.0.0.1:4222 go test ./...
 
 ## 📄 License
 
-This module is part of the [fiber-extras](https://github.com/rachmanzz/fiber-extras) repository and is licensed under the [MIT License](../../LICENSE).
+This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).
 
 ---
 
