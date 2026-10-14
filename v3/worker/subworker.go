@@ -98,7 +98,9 @@ func (p *subWorkerPool) setError(err error) {
 }
 
 // Wait blocks until all sub-workers have completed and returns the first error encountered.
+// It also cancels the pool context to detach from the parent context tree and prevent resource leaks.
 func (p *subWorkerPool) Wait() error {
 	p.wg.Wait()
+	p.cancel(p.firstErr)
 	return p.firstErr
 }

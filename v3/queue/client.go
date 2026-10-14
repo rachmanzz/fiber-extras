@@ -168,16 +168,17 @@ func Dispatch(ctx context.Context, topic string, payload any, opts ...DispatchOp
 			return fmt.Errorf("queue: failed to marshal payload: %w", err)
 		}
 		bytes = b
-		if msg.codec != nil {
-			if msg.Headers == nil {
-				msg.Headers = make(map[string]string)
-			}
-			if _, exists := msg.Headers[contentTypeHeader]; !exists {
-				msg.Headers[contentTypeHeader] = msg.codec.ContentType()
-			}
-		}
 	}
 	msg.Payload = bytes
+
+	if msg.codec != nil {
+		if msg.Headers == nil {
+			msg.Headers = make(map[string]string)
+		}
+		if _, exists := msg.Headers[contentTypeHeader]; !exists {
+			msg.Headers[contentTypeHeader] = msg.codec.ContentType()
+		}
+	}
 
 	err := Enqueue(ctx, msg)
 	if err != nil {

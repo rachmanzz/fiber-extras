@@ -324,6 +324,9 @@ func (p *PostgresDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) 
 		if err := rows.Scan(
 			&msg.ID, &msg.Topic, &msg.Payload, &prio, &groupID, &groupOrder, &msg.CreatedAt, &msg.Attempt, &msg.MaxAttempts, &headersRaw, &leaseUntil,
 		); err != nil {
+			if len(deliveries) > 0 {
+				return deliveries, nil
+			}
 			return nil, err
 		}
 		headers, hErr := unmarshalHeaders(headersRaw)
@@ -349,6 +352,12 @@ func (p *PostgresDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) 
 			Message: &msg,
 			Token:   claim{id: msg.ID, lease: leaseUntil},
 		})
+	}
+	if err := rows.Err(); err != nil {
+		if len(deliveries) > 0 {
+			return deliveries, nil
+		}
+		return nil, fmt.Errorf("queue-postgres: row iteration failed: %w", err)
 	}
 	return deliveries, nil
 }

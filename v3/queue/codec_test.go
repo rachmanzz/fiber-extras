@@ -151,16 +151,17 @@ func TestCodec_DispatchDefaultStaysJSON(t *testing.T) {
 	}
 }
 
-func TestCodec_DispatchRawBytesWithCodecIsUntagged(t *testing.T) {
+func TestCodec_DispatchRawBytesWithCodecPreservesPayloadAndSetsContentType(t *testing.T) {
 	queue.Reset()
 	defer queue.Reset()
 
 	driver := queue.NewMemoryDriver()
 	queue.SetDriver(driver)
 
+	c := prefixCodec{prefix: "PX:"}
 	raw := []byte("already-encoded")
 	ctx := context.Background()
-	if err := queue.Dispatch(ctx, "topic", raw, queue.WithCodec(prefixCodec{prefix: "PX:"})); err != nil {
+	if err := queue.Dispatch(ctx, "topic", raw, queue.WithCodec(c)); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 
@@ -170,8 +171,8 @@ func TestCodec_DispatchRawBytesWithCodecIsUntagged(t *testing.T) {
 	}
 	msg := deliveries[0].Message
 
-	if got, ok := msg.Headers["content-type"]; ok {
-		t.Fatalf("raw byte payload must not be codec-tagged, got content-type=%q", got)
+	if got := msg.Headers["content-type"]; got != c.ContentType() {
+		t.Fatalf("raw byte payload with WithCodec must set content-type=%q, got %q", c.ContentType(), got)
 	}
 	if !bytes.Equal(msg.Payload, raw) {
 		t.Fatalf("raw byte payload was mutated: %q", msg.Payload)
@@ -255,3 +256,62 @@ func TestCodec_UserContentTypePreserved(t *testing.T) {
 		t.Fatalf("user content-type was overwritten: %q", got)
 	}
 }
+
+func TestCodec_DispatchRawBytesAndStringPreservesContentTypeHeader(t *testing.T) {
+	queue.Reset()
+	defer queue.Reset()
+
+	driver := queue.NewMemoryDriver()
+	queue.SetDriver(driver)
+
+	c := prefixCodec{prefix: "PX:"}
+	queue.RegisterCodec(c)
+	ctx := context.Background()
+
+	// 1. Dispatch []byte with WithCodec
+	rawBytes := []byte("PX:{\"foo\":\"bar\"}")
+	if err := queue.Dispatch(ctx, "topic.bytes", rawBytes, queue.WithCodec(c)); err != nil {
+		t.Fatalf("dispatch bytes: %v", err)
+	}
+
+	// 2. Dispatch string with WithCodec
+	rawStr := "PX:{\"baz\":\"qux\"}"
+	if err := queue.Dispatch(ctx, "topic.str", rawStr, queue.WithCodec(c)); err != nil {
+		t.Fatalf("dispatch string: %v", err)
+	}
+
+	deliveries, err := driver.Dequeue(ctx, queue.DequeueRequest{BatchSize: 2})
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("expected 2 deliveries, got %d", len(deliveries))
+	}
+
+	// Verify delivery 1 (bytes)
+	d1 := deliveries[0]
+	if got := d1.Message.Headers["content-type"]; got != c.ContentType() {
+		t.Errorf("bytes delivery content-type = %q, want %q", got, c.ContentType())
+	}
+	var out1 map[string]string
+	if err := queue.Decode(d1.Message, &out1); err != nil {
+		t.Errorf("decode bytes delivery failed: %v", err)
+	}
+	if out1["foo"] != "bar" {
+		t.Errorf("decoded bytes payload = %v, want bar", out1["foo"])
+	}
+
+	// Verify delivery 2 (string)
+	d2 := deliveries[1]
+	if got := d2.Message.Headers["content-type"]; got != c.ContentType() {
+		t.Errorf("string delivery content-type = %q, want %q", got, c.ContentType())
+	}
+	var out2 map[string]string
+	if err := queue.Decode(d2.Message, &out2); err != nil {
+		t.Errorf("decode string delivery failed: %v", err)
+	}
+	if out2["baz"] != "qux" {
+		t.Errorf("decoded string payload = %v, want qux", out2["baz"])
+	}
+}
+

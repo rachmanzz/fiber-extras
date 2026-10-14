@@ -40,6 +40,7 @@ type Consumer struct {
 	groupLocks       map[string]*groupLockEntry
 	groupMu          sync.Mutex
 	retryTimers      map[*time.Timer]struct{}
+	inFlight         sync.WaitGroup
 }
 
 // ConsumerOption configures parameters of a Consumer.
@@ -188,7 +189,9 @@ func (c *Consumer) fetchAndProcess() int {
 		if m == nil {
 			continue
 		}
+		c.inFlight.Add(1)
 		task := worker.NewTaskFunc(m.Topic, func(tCtx context.Context, subPool worker.SubWorkerPool) error {
+			defer c.inFlight.Done()
 			handler, exists := c.router.Get(m.Topic)
 			if !exists {
 				return c.handleFailure(tCtx, d, ErrNoHandlerFound)
@@ -229,6 +232,7 @@ func (c *Consumer) fetchAndProcess() int {
 
 		err := c.workerDispatcher.Dispatch(ctx, task)
 		if err != nil {
+			c.inFlight.Done()
 			// If worker engine task queue is full (backpressure), do not drop message!
 			// Nack immediately so broker/adapter can redeliver later when worker has capacity.
 			_ = c.driver.Nack(ctx, d, err)
@@ -250,7 +254,9 @@ func (c *Consumer) fetchAndProcess() int {
 		// The engine's per-task pool is intentionally unused here: grouped
 		// members get a fresh pool each (see below) so a sub-worker failure in
 		// one member cannot cancel the fan-out of the next.
+		c.inFlight.Add(1)
 		groupTask := worker.NewTaskFunc("group:"+gID, func(tCtx context.Context, _ worker.SubWorkerPool) error {
+			defer c.inFlight.Done()
 			// Acquire group lock inside the worker task to serialize processing across batches
 			// without blocking the main poller loop (avoids head-of-line blocking).
 			entry.mu.Lock()
@@ -334,6 +340,7 @@ func (c *Consumer) fetchAndProcess() int {
 
 		err := c.workerDispatcher.Dispatch(ctx, groupTask)
 		if err != nil {
+			c.inFlight.Done()
 			c.groupMu.Lock()
 			entry.refs--
 			if entry.refs <= 0 {
@@ -537,6 +544,7 @@ func (c *Consumer) Stop() {
 	}
 	close(c.quit)
 	c.wg.Wait()
+	c.inFlight.Wait()
 	c.closeOnce.Do(func() {
 		_ = c.driver.Close()
 	})

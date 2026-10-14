@@ -651,3 +651,55 @@ func TestConsumer_GroupNoHeadOfLineBlocking(t *testing.T) {
 	close(unblockGroupA)
 }
 
+func TestConsumer_StopWaitsForInFlightTaskAck(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
+
+	taskStarted := make(chan struct{})
+	finishTask := make(chan struct{})
+	var ackSucceeded atomic.Bool
+
+	router.Register("in.flight", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		close(taskStarted)
+		<-finishTask
+		return nil
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 2, TaskQueueSize: 8})
+	engine.Start()
+	defer engine.Shutdown()
+
+	consumer := queue.NewConsumer(driver, router, engine, queue.WithPollInterval(2*time.Millisecond))
+	consumer.Start()
+
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("in.flight", []byte("data")))
+
+	// Wait for task to be actively running in worker
+	<-taskStarted
+
+	// Call consumer.Stop() concurrently in a separate goroutine
+	stopDone := make(chan struct{})
+	go func() {
+		consumer.Stop()
+		close(stopDone)
+	}()
+
+	// Give Stop() a moment to initiate and wait
+	time.Sleep(50 * time.Millisecond)
+
+	// Now release the task to finish and call driver.Ack
+	close(finishTask)
+
+	// consumer.Stop() should return cleanly
+	select {
+	case <-stopDone:
+		ackSucceeded.Store(true)
+	case <-time.After(3 * time.Second):
+		t.Fatal("consumer.Stop timed out waiting for in-flight task")
+	}
+
+	if !ackSucceeded.Load() {
+		t.Fatal("expected in-flight task to complete before driver closed")
+	}
+}
+
