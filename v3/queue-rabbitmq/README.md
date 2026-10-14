@@ -58,8 +58,9 @@ Semantics after a connection loss:
 
 - Deliveries that were unacked are **requeued by the broker** and redelivered
   (at-least-once). Nothing is lost.
-- `Ack`/`Nack` on deliveries from a dropped connection are treated as settled;
-  the redelivery is the retry.
+- `Ack`/`Nack` on deliveries from a dropped connection or stale channel generations return
+  `queuerabbitmq.ErrDeliveryLost` (aliased to canonical `queue.ErrDeliveryLost`) so callers know
+  the delivery is no longer owned by the current channel.
 - Operations issued while the supervisor is reconnecting return the sentinel
   `queuerabbitmq.ErrReconnecting` — safe to retry.
 

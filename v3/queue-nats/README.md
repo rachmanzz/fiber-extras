@@ -63,6 +63,13 @@ TEST_NATS_URL=nats://127.0.0.1:4222 go test ./...
 
 ---
 
+## ⚡ Context-Aware I/O & Subject Sanitization
+
+- **Context-Aware I/O**: `Enqueue` and `Dequeue` operations strictly respect caller `context.Context` deadlines and cancellations via `nats.Context(ctx)`, ensuring no stalled goroutines when the consumer shuts down.
+- **Subject Sanitization**: Queue topics are automatically sanitized into valid NATS JetStream subject tokens by replacing invalid whitespace with dots (`.`), while preserving wildcard tokens (`*` and `>`).
+
+---
+
 ## 📄 License
 
 This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).

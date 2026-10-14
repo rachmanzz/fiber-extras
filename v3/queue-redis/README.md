@@ -70,6 +70,8 @@ adapter := queueredis.New(rdb, queueredis.WithVisibilityTimeout(1*time.Minute))
 
 The default lease is `DefaultVisibilityTimeout` (30 seconds). Keep it comfortably above your expected processing time to avoid duplicate deliveries; delivery is at-least-once, so handlers should be idempotent.
 
+If a worker attempts to `Ack`, `Nack`, or `Reenqueue` a delivery whose lease has expired and was already reclaimed or settled, the driver safely aborts and returns `queueredis.ErrDeliveryLost` (aliased to canonical `queue.ErrDeliveryLost`).
+
 ---
 
 ## 📄 License

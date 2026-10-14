@@ -14,6 +14,8 @@ adapter := queuepostgres.New(pool, queuepostgres.WithVisibilityTimeout(5*time.Mi
 
 The default lease is `DefaultVisibilityTimeout` (3 minutes). On `Ack` the row is **soft-deleted** (`status = 'acked'`) so `Replay` can still surface processed messages for auditing/recovery; the row is only physically removed by `PurgeAcked`. On `Nack` the delivery is released back to `pending` immediately.
 
+If `Ack`, `Nack`, or `Reenqueue` is called with a stale delivery token whose lease deadline was superseded by another worker or already settled, the driver aborts and returns `queuepostgres.ErrDeliveryLost` (aliased to canonical `queue.ErrDeliveryLost`).
+
 ### Replay & retention
 
 `Replay(ctx, from)` streams every message created since `from` — including completed (acked) rows — ordered by `created_at`. Because acked rows are retained, run `PurgeAcked` periodically to reclaim storage:

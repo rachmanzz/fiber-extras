@@ -28,14 +28,14 @@ Because `gosuite` was extracted from real-world workloads into a modular open-so
 
 | Package | Module Import Path | Maturity Status | Description |
 | :--- | :--- | :---: | :--- |
-| [worker](v3/worker) | `github.com/rachmanzz/gosuite/v3/worker` | `🧪 Beta (v0.2.0)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
-| [queue](v3/queue) | `github.com/rachmanzz/gosuite/v3/queue` | `🧪 Beta (v0.2.0)` | Multi-driver asynchronous queue orchestrator with priority ordering, group fanout, and retry/DLQ. |
-| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/gosuite/v3/queue-redis` | `🧪 Beta (v0.2.1)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
-| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/gosuite/v3/queue-nats` | `🌱 Alpha (v0.2.1)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
-| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/gosuite/v3/queue-rabbitmq` | `🌱 Alpha (v0.2.1)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
-| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/gosuite/v3/queue-postgres` | `🌱 Alpha (v0.2.0)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
-| [queue-msgpack](v3/queue-msgpack) | `github.com/rachmanzz/gosuite/v3/queue-msgpack` | `🌱 Alpha (v0.2.0)` | Pluggable MessagePack payload codec for `v3/queue` (`queue.WithCodec`), working across every adapter. |
-| [cron](v3/cron) | `github.com/rachmanzz/gosuite/v3/cron` | `🧪 Beta (v0.2.0)` | Production-grade scheduler with a Task contract, fluent schedule builders, panic recovery, skip-if-still-running, and graceful shutdown. |
+| [worker](v3/worker) | `github.com/rachmanzz/gosuite/v3/worker` | `🧪 Beta (v0.2.2)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
+| [queue](v3/queue) | `github.com/rachmanzz/gosuite/v3/queue` | `🧪 Beta (v0.2.2)` | Multi-driver asynchronous queue orchestrator with priority ordering, group FIFO quarantine, and retry/DLQ. |
+| [queue-redis](v3/queue-redis) | `github.com/rachmanzz/gosuite/v3/queue-redis` | `🧪 Beta (v0.2.2)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
+| [queue-nats](v3/queue-nats) | `github.com/rachmanzz/gosuite/v3/queue-nats` | `🌱 Alpha (v0.2.2)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
+| [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/gosuite/v3/queue-rabbitmq` | `🌱 Alpha (v0.2.2)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |
+| [queue-postgres](v3/queue-postgres) | `github.com/rachmanzz/gosuite/v3/queue-postgres` | `🌱 Alpha (v0.2.2)` | Transactional PostgreSQL adapter for `v3/queue` using SELECT FOR UPDATE SKIP LOCKED. |
+| [queue-msgpack](v3/queue-msgpack) | `github.com/rachmanzz/gosuite/v3/queue-msgpack` | `🌱 Alpha (v0.2.2)` | Pluggable MessagePack payload codec for `v3/queue` (`queue.WithCodec`), working across every adapter. |
+| [cron](v3/cron) | `github.com/rachmanzz/gosuite/v3/cron` | `🧪 Beta (v0.2.2)` | Production-grade scheduler with a Task contract, fluent schedule builders, panic recovery, skip-if-still-running, and graceful shutdown. |
 
 ---
 

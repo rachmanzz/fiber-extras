@@ -508,6 +508,14 @@ Retries are rescheduled **before** the current delivery is acknowledged whenever
 ### Non-Retryable Errors
 If a handler returns an error marked as non-retryable via `queue.MarkNonRetryable(err)` (or if no handler exists for the topic), the message **bypasses retry attempts** and is routed immediately to `<topic>:dlq`.
 
+### Lease & Delivery Sentinel (`queue.ErrDeliveryLost`)
+Broker operations (`Ack`, `Nack`, `Reenqueue`) return the canonical `queue.ErrDeliveryLost` sentinel error if the message's visibility timeout (lease) expired while processing and was reclaimed/redelivered by another worker, or if connection was dropped. Callers can safely check this uniformly across all adapters:
+```go
+if errors.Is(err, queue.ErrDeliveryLost) {
+    // Delivery token is no longer owned (lease expired or connection lost)
+}
+```
+
 ---
 
 ## 🎯 6. Priority & Group Ordering
@@ -527,6 +535,11 @@ Messages with identical `GroupID` are processed sequentially in `GroupOrder` seq
 queue.Dispatch(ctx, "sync.job", part1, queue.WithGroup("tenant-101", 1))
 queue.Dispatch(ctx, "sync.job", part2, queue.WithGroup("tenant-101", 2))
 ```
+
+#### Cross-Poll Group Quarantine
+If an upstream group member fails and is scheduled for retry with exponential backoff:
+1. Any remaining downstream members within the **same batch** are delayed by the matching backoff window.
+2. If new messages for the same `GroupID` arrive in **subsequent polling ticks** while the upstream member is still waiting for its retry backoff, the consumer automatically quarantines the incoming batch by delaying it for the remainder of the quarantine window. This prevents cross-poll FIFO inversion and guarantees strict sequential execution.
 
 ---
 
