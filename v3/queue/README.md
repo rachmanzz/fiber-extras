@@ -74,6 +74,35 @@ func main() {
 }
 ```
 
+### 1.1 Important: Registration Behavior & Concurrency Patterns
+
+> [!IMPORTANT]
+> **Handler Registration & Overwrite Semantics:**
+> - `queue.RegisterHandler(topic, handler)` binds a handler to a topic on the global router.
+> - **Overwrite Behavior**: If the same topic is registered more than once, the new handler **overwrites** the previously registered handler unconditionally.
+> - **Best Practice**: All handlers should be registered **once during application bootstrap / startup** (e.g. in `bootstrap/hook.go` or `init()`). Avoid calling `RegisterHandler` inside dynamic request handlers or concurrent worker loops.
+
+#### Global Convenience API vs. Instance-Based API
+
+`v3/queue` provides two operational patterns to support both simple application services and complex multi-tenant workloads:
+
+| Pattern | API Methods | Best For | Concurrency Behavior |
+| :--- | :--- | :--- | :--- |
+| **Global Convenience API** | `queue.RegisterHandler`, `queue.SetDriver`, `queue.StartConsumer`, `queue.StopConsumer` | Typical web applications, HTTP APIs, and single-tenant microservices | Process-wide singleton. Handlers and drivers are registered once during startup. Calling `StopConsumer()` stops all global consumers. |
+| **Instance-Based API** | `queue.NewRouter()`, `queue.NewConsumer()`, `queue.NewMemoryDriver()` | Multi-tenant services, concurrent episodic scans, isolated sub-systems, or tests | Completely decoupled. Each consumer maintains its own isolated router, drivers, and lifecycle with zero cross-job interference. |
+
+**Instance-Based Example (Safe for Concurrent Dynamic Jobs / Scans):**
+```go
+// Create completely isolated queue instances per job/scan without touching global state
+driver := queue.NewMemoryDriver()
+router := queue.NewRouter()
+router.Register("scan:file", myFileHandler)
+
+consumer := queue.NewConsumer(driver, router, myWorkerEngine)
+consumer.Start()
+defer consumer.Stop() // Safely drains and stops only this specific consumer instance
+```
+
 ---
 
 ## 🔀 2. Multi-Driver Architecture (Hybrid Brokers)
