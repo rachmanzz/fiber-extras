@@ -28,8 +28,8 @@ Because `gosuite` was extracted from real-world workloads into a modular open-so
 
 | Package | Module Import Path | Maturity Status | Description |
 | :--- | :--- | :---: | :--- |
-| [worker](v3/worker) | `github.com/rachmanzz/gosuite/v3/worker` | `🧪 Beta (v0.2.2)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
-| [queue](v3/queue) | `github.com/rachmanzz/gosuite/v3/queue` | `🧪 Beta (v0.2.2)` | Multi-driver asynchronous queue orchestrator with priority ordering, group FIFO quarantine, and retry/DLQ. |
+| [worker](v3/worker) | `github.com/rachmanzz/gosuite/v3/worker` | `🧪 Beta (v0.2.3)` | Resilient background worker engine with parallel sub-worker fan-out, panic safety & clean lifecycle hooks. |
+| [queue](v3/queue) | `github.com/rachmanzz/gosuite/v3/queue` | `🧪 Beta (v0.2.3)` | Multi-driver asynchronous queue orchestrator with priority ordering, group FIFO quarantine, and retry/DLQ. |
 | [queue-redis](v3/queue-redis) | `github.com/rachmanzz/gosuite/v3/queue-redis` | `🧪 Beta (v0.2.2)` | Redis adapter for `v3/queue` with priority ZSet and delayed scheduling. |
 | [queue-nats](v3/queue-nats) | `github.com/rachmanzz/gosuite/v3/queue-nats` | `🌱 Alpha (v0.2.2)` | NATS JetStream WorkQueue adapter for `v3/queue` with deduplication and prioritized pull. |
 | [queue-rabbitmq](v3/queue-rabbitmq) | `github.com/rachmanzz/gosuite/v3/queue-rabbitmq` | `🌱 Alpha (v0.2.2)` | AMQP 0.9.1 RabbitMQ adapter for `v3/queue` with x-max-priority and manual acknowledgments. |

@@ -23,7 +23,7 @@ go get github.com/rachmanzz/gosuite/v3/worker
 
 - **Goroutine Pool & Bounded Queue**: Fixed worker goroutines process tasks from a buffered channel with non-blocking dispatch and queue saturation safety (`ErrQueueFull`).
 - **Parallel Sub-Worker Fan-Out**: Single tasks can spawn parallel sub-tasks throttled by a semaphore (`SubWorkerPool`).
-- **Deterministic Sub-Worker Cleanup**: The engine automatically waits and joins all spawned sub-workers upon task completion or task panic, preventing orphan or zombie goroutines from leaking even when `pool.Wait()` is omitted.
+- **Deterministic & Idempotent Sub-Worker Cleanup**: The engine automatically waits and joins all spawned sub-workers upon task completion or task panic. Calling `pool.Wait()` multiple times is 100% idempotent and returns the same original result, preventing orphan goroutine leaks and eliminating spurious context cancellation errors.
 - **Fail-Fast Error Propagation**: If any sub-worker fails, sibling sub-workers are promptly signaled via `context.WithCancelCause`, and `pool.Wait()` returns the first error.
 - **Isolated Panic Recovery**: Panics within main tasks or individual sub-workers are safely captured with full stack traces without crashing the host application.
 - **Dual Dispatch Modes**: Asynchronous non-blocking (`Dispatch`) or synchronous blocking (`ExecuteSync`).
