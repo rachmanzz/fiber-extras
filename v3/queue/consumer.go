@@ -21,6 +21,11 @@ type groupLockEntry struct {
 	refs int
 }
 
+type pendingRetry struct {
+	msg *Message
+	del *Delivery
+}
+
 // Consumer handles polling messages from the driver and executing them via worker.Dispatcher.
 type Consumer struct {
 	driver           Driver
@@ -39,7 +44,7 @@ type Consumer struct {
 	closeOnce        sync.Once
 	groupLocks       map[string]*groupLockEntry
 	groupMu          sync.Mutex
-	retryTimers      map[*time.Timer]*Message
+	retryTimers      map[*time.Timer]pendingRetry
 	inFlight         sync.WaitGroup
 }
 
@@ -102,7 +107,7 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 		ctx:              ctx,
 		cancel:           cancel,
 		groupLocks:       make(map[string]*groupLockEntry),
-		retryTimers:      make(map[*time.Timer]*Message),
+		retryTimers:      make(map[*time.Timer]pendingRetry),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -461,8 +466,8 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 	}
 
 	// Core delayed dispatch fallback: the adapter supports no delayed enqueue, so
-	// schedule an immediate in-process re-enqueue and then Ack. This mirrors the
-	// old behaviour but enqueues before dropping the original.
+	// schedule an in-process timer to publish the retry copy at the backoff deadline,
+	// and only Ack the original delivery once the retry copy is successfully enqueued.
 	var timer *time.Timer
 	c.mu.Lock()
 	if c.closed {
@@ -477,17 +482,17 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 		if closed {
 			return
 		}
-		_ = c.driver.Enqueue(context.Background(), m)
+		if err := c.driver.Enqueue(context.Background(), m); err == nil {
+			_ = c.driver.Ack(context.Background(), d)
+		} else {
+			c.logger.Error("failed to enqueue retry message in delayed fallback",
+				"topic", m.Topic, "msg_id", m.ID, "error", err,
+			)
+			_ = c.driver.Nack(context.Background(), d, err)
+		}
 	})
-	c.retryTimers[timer] = m
+	c.retryTimers[timer] = pendingRetry{msg: m, del: d}
 	c.mu.Unlock()
-
-	if err := c.driver.Ack(ctx, d); err != nil {
-		c.logger.Error("failed to ack delivery after retry scheduled",
-			"topic", m.Topic, "msg_id", m.ID, "error", err,
-		)
-		return err
-	}
 	return nil
 }
 
@@ -533,20 +538,24 @@ func (c *Consumer) Stop() {
 		return
 	}
 	c.closed = true
-	var pending []*Message
-	for t, m := range c.retryTimers {
+	var pending []pendingRetry
+	for t, p := range c.retryTimers {
 		t.Stop()
-		if m != nil {
-			pending = append(pending, m)
+		if p.msg != nil {
+			pending = append(pending, p)
 		}
 	}
 	c.retryTimers = nil
 	c.mu.Unlock()
 
-	// Flush any pending retry messages that were already Acked from the broker
-	// so they are not permanently lost on consumer shutdown.
-	for _, m := range pending {
-		_ = c.driver.Enqueue(context.Background(), m)
+	// Flush any pending retry messages: enqueue the retry copy first, then ack the original.
+	// If enqueue fails, nack the original so it stays in the broker.
+	for _, p := range pending {
+		if err := c.driver.Enqueue(context.Background(), p.msg); err == nil {
+			_ = c.driver.Ack(context.Background(), p.del)
+		} else {
+			_ = c.driver.Nack(context.Background(), p.del, err)
+		}
 	}
 
 	if c.cancel != nil {

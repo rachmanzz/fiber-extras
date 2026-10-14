@@ -465,8 +465,9 @@ func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *que
 				return
 			}
 			cbCtx := context.WithoutCancel(ctx)
-			_ = n.Enqueue(cbCtx, msg)
-			_ = n.Ack(cbCtx, d)
+			if err := n.Enqueue(cbCtx, msg); err == nil {
+				_ = n.Ack(cbCtx, d)
+			}
 		})
 
 		n.mu.Lock()

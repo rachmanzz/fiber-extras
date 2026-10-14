@@ -109,3 +109,10 @@ func TestRedisDriver_NilMessageRejected(t *testing.T) {
 		t.Fatalf("expected ErrNilMessage on EnqueueAt(nil), got %v", err)
 	}
 }
+
+func TestRedisDriver_ErrDeliveryLostExported(t *testing.T) {
+	if queueredis.ErrDeliveryLost == nil {
+		t.Fatal("expected ErrDeliveryLost to be non-nil")
+	}
+}
+

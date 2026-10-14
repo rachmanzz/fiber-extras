@@ -581,8 +581,9 @@ func (r *RabbitMQAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg 
 			// but keep its values, so a cancelled caller does not abort the
 			// deferred re-enqueue and ack.
 			cbCtx := context.WithoutCancel(ctx)
-			_ = r.Enqueue(cbCtx, msg)
-			_ = r.Ack(cbCtx, d)
+			if err := r.Enqueue(cbCtx, msg); err == nil {
+				_ = r.Ack(cbCtx, d)
+			}
 		})
 
 		r.mu.Lock()

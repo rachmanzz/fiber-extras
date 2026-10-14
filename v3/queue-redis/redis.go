@@ -14,6 +14,32 @@ import (
 // ErrNilMessage is returned when attempting to enqueue a nil message.
 var ErrNilMessage = errors.New("queue-redis: cannot enqueue nil message")
 
+// ErrDeliveryLost is returned when a delivery token no longer owns its in-flight lease,
+// either because the visibility timeout expired and the message was reclaimed by another
+// worker, or because it was already settled.
+var ErrDeliveryLost = errors.New("queue-redis: delivery is no longer owned (lease expired or already settled)")
+
+type deliveryClaim struct {
+	id    string
+	lease float64
+}
+
+func parseDeliveryClaim(tok any) (string, float64, error) {
+	switch t := tok.(type) {
+	case deliveryClaim:
+		return t.id, t.lease, nil
+	case *deliveryClaim:
+		if t == nil {
+			return "", 0, fmt.Errorf("queue-redis: nil delivery claim")
+		}
+		return t.id, t.lease, nil
+	case string:
+		return t, 0, nil
+	default:
+		return "", 0, fmt.Errorf("queue-redis: invalid delivery token type: %T", tok)
+	}
+}
+
 // DefaultPrefix is the default key prefix for Redis queue data structures.
 const DefaultPrefix = "gosuite:queue:"
 
@@ -225,14 +251,70 @@ end
 return out
 `)
 
-// requeueInflight atomically removes a member from the in-flight ZSet and puts
-// it back into the ready ZSet with the given score (used by Nack).
-var requeueInflightScript = redis.NewScript(`
+// ackInflightScript atomically checks that the message is still in the in-flight ZSet
+// (and matches the lease deadline if provided) before deleting it from the hash
+// and clearing the in-flight lease. If the lease expired and the message was reclaimed
+// (or claimed by another worker), it aborts and returns 0 without touching the message hash.
+var ackInflightScript = redis.NewScript(`
+local currentLease = redis.call('ZSCORE', KEYS[2], ARGV[1])
+if not currentLease then
+  return 0
+end
+if ARGV[2] ~= '' and ARGV[2] ~= '0' then
+  local expected = tonumber(ARGV[2])
+  local actual = tonumber(currentLease)
+  if not expected or not actual or math.abs(actual - expected) > 0.001 then
+    return 0
+  end
+end
+redis.call('HDEL', KEYS[1], ARGV[1]..':p', ARGV[1]..':m')
+redis.call('ZREM', KEYS[2], ARGV[1])
+redis.call('HDEL', KEYS[3], ARGV[1])
+return 1
+`)
+
+// nackInflightScript atomically restores a message to the ready ZSet only if
+// the delivery still owns its in-flight lease. If the lease expired and was reclaimed
+// by another worker, it aborts and returns 0 without stealing the new worker's lease.
+var nackInflightScript = redis.NewScript(`
+local currentLease = redis.call('ZSCORE', KEYS[2], ARGV[2])
+if not currentLease then
+  return 0
+end
+if ARGV[3] ~= '' and ARGV[3] ~= '0' then
+  local expected = tonumber(ARGV[3])
+  local actual = tonumber(currentLease)
+  if not expected or not actual or math.abs(actual - expected) > 0.001 then
+    return 0
+  end
+end
 redis.call('ZREM', KEYS[2], ARGV[2])
 redis.call('HDEL', KEYS[3], ARGV[2])
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
 return 1
 `)
+
+// reenqueueInflightScript atomically reschedules a message to the delayed ZSet
+// only if the delivery still owns its in-flight lease.
+var reenqueueInflightScript = redis.NewScript(`
+local currentLease = redis.call('ZSCORE', KEYS[2], ARGV[2])
+if not currentLease then
+  return 0
+end
+if ARGV[3] ~= '' and ARGV[3] ~= '0' then
+  local expected = tonumber(ARGV[3])
+  local actual = tonumber(currentLease)
+  if not expected or not actual or math.abs(actual - expected) > 0.001 then
+    return 0
+  end
+end
+redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('HDEL', KEYS[3], ARGV[2])
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[4], ARGV[2]..':p', ARGV[4], ARGV[2]..':m', ARGV[5])
+return 1
+`)
+
 
 // migrateDelayedScript atomically migrates matured delayed members to the
 // ready ZSet. For each (member, score) argument it first ZREMs the member from
@@ -453,7 +535,7 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 			// dropping it.
 			deliveries = append(deliveries, &queue.Delivery{
 				Message: queue.NewPoisonMessage(msgID, nil, fmt.Errorf("queue-redis: missing payload for message id %q", msgID), r.Name()),
-				Token:   msgID,
+				Token:   deliveryClaim{id: msgID, lease: leaseScore},
 			})
 			continue
 		}
@@ -461,71 +543,97 @@ func (r *RedisDriver) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		if err != nil {
 			deliveries = append(deliveries, &queue.Delivery{
 				Message: queue.NewPoisonMessage(msgID, v2Payload, fmt.Errorf("queue-redis: corrupt metadata: %w", err), r.Name()),
-				Token:   msgID,
+				Token:   deliveryClaim{id: msgID, lease: leaseScore},
 			})
 			continue
 		}
 		msg := meta.toMessage(v2Payload)
-		deliveries = append(deliveries, &queue.Delivery{Message: msg, Token: msg.ID})
+		deliveries = append(deliveries, &queue.Delivery{
+			Message: msg,
+			Token:   deliveryClaim{id: msg.ID, lease: leaseScore},
+		})
 	}
 
 	return deliveries, nil
 }
 
-// Reenqueue reschedules a delivery by upserting the message into the delayed set.
-// The message hash entry is overwritten in place (same message ID) so there is no
-// ack-then-enqueue gap, and the in-flight entry is cleared so the lease cannot
-// later reclaim it into the ready set as a duplicate.
+// Reenqueue reschedules a delivery by atomically upserting the message into the delayed set
+// only if the delivery still owns its in-flight lease. If the lease expired and was claimed
+// by another worker, it aborts and returns ErrDeliveryLost without modifying delayed or hash sets.
 func (r *RedisDriver) Reenqueue(ctx context.Context, d *queue.Delivery, msg *queue.Message, at time.Time) error {
 	if d == nil || d.Token == nil {
 		return nil
 	}
-	if err := r.EnqueueAt(ctx, msg, at); err != nil {
+	if msg == nil {
+		return ErrNilMessage
+	}
+	id, lease, err := parseDeliveryClaim(d.Token)
+	if err != nil {
 		return err
 	}
-	if msgID, ok := d.Token.(string); ok {
-		pipe := r.client.Pipeline()
-		pipe.ZRem(ctx, r.inflightKey(), msgID)
-		pipe.HDel(ctx, r.inflightScoreKey(), msgID)
-		if _, err := pipe.Exec(ctx); err != nil {
-			return err
-		}
+	meta, err := encodeMeta(msg)
+	if err != nil {
+		return fmt.Errorf("queue-redis: failed to encode metadata: %w", err)
+	}
+	payload := msg.Payload
+	if payload == nil {
+		payload = []byte{}
+	}
+	delayedScore := float64(at.UnixNano()) / 1e9
+	leaseArg := ""
+	if lease > 0 {
+		leaseArg = fmt.Sprintf("%.6f", lease)
+	}
+	res, err := reenqueueInflightScript.Run(ctx, r.client,
+		[]string{r.delayedKey(), r.inflightKey(), r.inflightScoreKey(), r.dataKey()},
+		delayedScore, id, leaseArg, payload, meta).Int64()
+	if err != nil {
+		return err
+	}
+	if res == 0 {
+		return ErrDeliveryLost
 	}
 	return nil
 }
 
 // Ack removes the processed message payload from the Redis hash and clears its
-// in-flight lease.
+// in-flight lease only while the caller still owns the lease. If the lease expired
+// or was claimed by another worker, ErrDeliveryLost is returned and the message hash is untouched.
 func (r *RedisDriver) Ack(ctx context.Context, d *queue.Delivery) error {
 	if d == nil || d.Token == nil {
 		return nil
 	}
-	msgID, ok := d.Token.(string)
-	if !ok {
-		return fmt.Errorf("queue-redis: invalid delivery token type: %T", d.Token)
+	id, lease, err := parseDeliveryClaim(d.Token)
+	if err != nil {
+		return err
 	}
-	pipe := r.client.Pipeline()
-	pipe.HDel(ctx, r.dataKey(), payloadField(msgID), metaField(msgID))
-	pipe.ZRem(ctx, r.inflightKey(), msgID)
-	pipe.HDel(ctx, r.inflightScoreKey(), msgID)
-	_, err := pipe.Exec(ctx)
-	return err
+	leaseArg := ""
+	if lease > 0 {
+		leaseArg = fmt.Sprintf("%.6f", lease)
+	}
+	res, err := ackInflightScript.Run(ctx, r.client,
+		[]string{r.dataKey(), r.inflightKey(), r.inflightScoreKey()},
+		id, leaseArg).Int64()
+	if err != nil {
+		return err
+	}
+	if res == 0 {
+		return ErrDeliveryLost
+	}
+	return nil
 }
 
 // Nack restores the message back into the priority queue for retry and clears
-// its in-flight lease in the same atomic step.
+// its in-flight lease only while the caller still owns the lease; otherwise ErrDeliveryLost is returned.
 func (r *RedisDriver) Nack(ctx context.Context, d *queue.Delivery, reason error) error {
 	if d == nil || d.Token == nil {
 		return nil
 	}
-	msgID, ok := d.Token.(string)
-	if !ok {
-		return fmt.Errorf("queue-redis: invalid delivery token type: %T", d.Token)
+	id, lease, err := parseDeliveryClaim(d.Token)
+	if err != nil {
+		return err
 	}
 	prio := queue.PriorityDefault
-	// Score the redelivery exactly like Enqueue does (priority*1e9 - CreatedAt),
-	// so a nacked message returns to its original position within its priority
-	// class instead of being pushed behind every newer message by time.Now().
 	createdAt := time.Now()
 	if d.Message != nil {
 		prio = d.Message.Priority
@@ -534,8 +642,20 @@ func (r *RedisDriver) Nack(ctx context.Context, d *queue.Delivery, reason error)
 		}
 	}
 	score := float64(prio)*1e9 - float64(createdAt.Unix())
-	return requeueInflightScript.Run(ctx, r.client,
-		[]string{r.queueKey(), r.inflightKey(), r.inflightScoreKey()}, score, msgID).Err()
+	leaseArg := ""
+	if lease > 0 {
+		leaseArg = fmt.Sprintf("%.6f", lease)
+	}
+	res, err := nackInflightScript.Run(ctx, r.client,
+		[]string{r.queueKey(), r.inflightKey(), r.inflightScoreKey()},
+		score, id, leaseArg).Int64()
+	if err != nil {
+		return err
+	}
+	if res == 0 {
+		return ErrDeliveryLost
+	}
+	return nil
 }
 
 // Close gracefully closes driver resources.

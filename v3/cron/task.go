@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Task is the contract for an executable scheduled job with lifecycle hooks.
@@ -42,6 +43,7 @@ type FluentScheduledTask interface {
 // OnFail so a crashing task can never silently kill the schedule.
 type TaskRunner struct {
 	task Task
+	mu   sync.RWMutex
 	ctx  context.Context
 }
 
@@ -58,7 +60,9 @@ func NewTaskRunner(task Task, parentCtx ...context.Context) *TaskRunner {
 // SetContext updates the base context used for running tasks.
 func (r *TaskRunner) SetContext(ctx context.Context) {
 	if ctx != nil {
+		r.mu.Lock()
 		r.ctx = ctx
+		r.mu.Unlock()
 	}
 }
 
@@ -66,7 +70,11 @@ func (r *TaskRunner) SetContext(ctx context.Context) {
 // OnError. It never returns an error: all outcomes are handled through the
 // task's own lifecycle hooks.
 func (r *TaskRunner) Run() {
-	ctx, cancel := context.WithCancel(r.ctx)
+	r.mu.RLock()
+	baseCtx := r.ctx
+	r.mu.RUnlock()
+
+	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
 	defer func() {

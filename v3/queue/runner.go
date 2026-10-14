@@ -15,6 +15,7 @@ import (
 var (
 	ErrRunnerAlreadyRunning = errors.New("queue: runner is already running")
 	ErrRunnerNoConsumers    = errors.New("queue: runner has no consumers configured")
+	ErrShutdownTimeout      = errors.New("queue runner: shutdown timed out waiting for consumers")
 )
 
 // Hook represents a lifecycle hook function for the standalone runner.
@@ -242,15 +243,24 @@ func (r *Runner) shutdown(consumers []*Consumer, usingGlobal bool) error {
 		close(stoppedDone)
 	}()
 
+	var shutdownErr error
 	select {
 	case <-stoppedDone:
 		r.logger.Info("queue runner: all consumers stopped cleanly")
 	case <-time.After(r.shutdownTimeout):
 		r.logger.Warn("queue runner: shutdown timed out waiting for consumers")
+		shutdownErr = ErrShutdownTimeout
 	}
 
 	// 6. Execute PostShutdown Hooks in FIFO order
-	return r.runPostShutdownHooks()
+	hookErr := r.runPostShutdownHooks()
+	if shutdownErr != nil && hookErr != nil {
+		return errors.Join(shutdownErr, hookErr)
+	}
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	return hookErr
 }
 
 func (r *Runner) runPostShutdownHooks() error {

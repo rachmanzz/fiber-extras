@@ -203,3 +203,45 @@ func TestRunner_RestartableAfterStop(t *testing.T) {
 		t.Fatal("runner timed out waiting for restart")
 	}
 }
+
+type slowCloseDriver struct {
+	queue.Adapter
+	blockClose chan struct{}
+}
+
+func (s *slowCloseDriver) Close() error {
+	<-s.blockClose
+	return s.Adapter.Close()
+}
+
+func TestRunner_ShutdownTimeoutReturnsError(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+
+	driver := &slowCloseDriver{
+		Adapter:    queue.NewMemoryDriver(),
+		blockClose: block,
+	}
+	consumer := queue.NewConsumer(driver, queue.NewRouter(), nil)
+	runner := queue.NewRunner(consumer).Configure(
+		queue.WithShutdownTimeout(30 * time.Millisecond),
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runner.Run()
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	runner.Stop()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, queue.ErrShutdownTimeout) {
+			t.Fatalf("expected ErrShutdownTimeout, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner timed out waiting for shutdown timeout")
+	}
+}
+
