@@ -36,5 +36,6 @@ Thumbs.db
 # Local knowledge base (audit notes, not committed)
 .knowledge/
 .knowlage/
+.knowledges/
 
 temp/
