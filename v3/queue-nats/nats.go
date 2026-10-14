@@ -386,7 +386,11 @@ func (n *NATSAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
 	}
 	n.mu.RUnlock()
 
-	_, err := n.js.PublishMsg(buildNATSMsg(n.subjectFor(msg), msg))
+	var opts []nats.PubOpt
+	if ctx != nil {
+		opts = append(opts, nats.Context(ctx))
+	}
+	_, err := n.js.PublishMsg(buildNATSMsg(n.subjectFor(msg), msg), opts...)
 	return err
 }
 
@@ -411,12 +415,28 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 		if sub == nil || len(deliveries) >= batchSize {
 			break
 		}
+		if ctx != nil && ctx.Err() != nil {
+			return deliveries, ctx.Err()
+		}
 
 		remaining := batchSize - len(deliveries)
-		msgs, err := sub.Fetch(remaining, nats.MaxWait(20*time.Millisecond))
+		var fetchOpts []nats.PullOpt
+		if ctx != nil {
+			if _, ok := ctx.Deadline(); ok {
+				fetchOpts = append(fetchOpts, nats.Context(ctx))
+			} else {
+				fetchOpts = append(fetchOpts, nats.MaxWait(20*time.Millisecond))
+			}
+		} else {
+			fetchOpts = append(fetchOpts, nats.MaxWait(20*time.Millisecond))
+		}
+		msgs, err := sub.Fetch(remaining, fetchOpts...)
 		if err != nil {
 			if errorsIsTimeout(err) {
 				continue
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return deliveries, err
 			}
 			return nil, err
 		}

@@ -28,6 +28,11 @@ var (
 	// "unknown delivery tag" channel exception.
 	errStaleDelivery = errors.New("queue-rabbitmq: delivery belongs to a previous connection")
 
+	// ErrDeliveryLost is returned when an Ack or Nack operation cannot be completed
+	// because the connection dropped or the delivery token belongs to a previous connection.
+	// The broker requeued the delivery, so attempting to settle it fails explicitly.
+	ErrDeliveryLost = errors.New("queue-rabbitmq: delivery is no longer owned (connection dropped or delivery tag stale)")
+
 	// ErrNilMessage is returned when attempting to enqueue a nil message.
 	ErrNilMessage = errors.New("queue-rabbitmq: cannot enqueue nil message")
 )
@@ -455,12 +460,18 @@ func (r *RabbitMQAdapter) withDeliveryChannel(tok deliveryToken, fn func(ch *amq
 	return nil
 }
 
-// settleError maps the terminal/temporary/stale cases of Ack and Nack to nil.
-// In every one of them the broker has requeued (or will redeliver) the
-// message, so returning an error would only make callers duplicate work.
+// settleError preserves the exact error state: if the connection dropped or the
+// delivery token is stale, ErrDeliveryLost is returned so the caller knows the broker
+// requeued the message and will redeliver it.
 func settleError(err error) error {
-	if errors.Is(err, errClosed) || errors.Is(err, ErrReconnecting) || errors.Is(err, errStaleDelivery) {
+	if err == nil {
 		return nil
+	}
+	if errors.Is(err, errClosed) {
+		return errClosed
+	}
+	if errors.Is(err, ErrReconnecting) || errors.Is(err, errStaleDelivery) {
+		return ErrDeliveryLost
 	}
 	return err
 }

@@ -61,3 +61,9 @@ func TestRabbitMQAdapter_NilMessageRejected(t *testing.T) {
 		t.Fatalf("expected ErrNilMessage on Enqueue(nil), got %v", err)
 	}
 }
+
+func TestRabbitMQAdapter_ErrDeliveryLostExported(t *testing.T) {
+	if queuerabbitmq.ErrDeliveryLost == nil {
+		t.Fatal("expected ErrDeliveryLost to be non-nil")
+	}
+}

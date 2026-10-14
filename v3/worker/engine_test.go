@@ -475,3 +475,39 @@ func TestSubWorkerPool_ContextCancellationSurfacesError(t *testing.T) {
 	}
 }
 
+func TestEngine_TaskPanicJoinsSubWorkers(t *testing.T) {
+	cfg := worker.DefaultConfig()
+	cfg.MaxWorkers = 1
+	cfg.TaskQueueSize = 5
+	engine := worker.NewEngine(cfg).Start()
+
+	var sub1Done, sub2Done atomic.Bool
+
+	task := worker.NewTaskFunc("panicking_task", func(ctx context.Context, subPool worker.SubWorkerPool) error {
+		subPool.Go(func(sCtx context.Context) error {
+			time.Sleep(20 * time.Millisecond)
+			sub1Done.Store(true)
+			return nil
+		})
+		subPool.Go(func(sCtx context.Context) error {
+			time.Sleep(20 * time.Millisecond)
+			sub2Done.Store(true)
+			return nil
+		})
+		panic("deliberate task panic")
+	})
+
+	if err := engine.Dispatch(context.Background(), task); err != nil {
+		t.Fatalf("failed to dispatch task: %v", err)
+	}
+
+	if err := engine.Shutdown(); err != nil {
+		t.Fatalf("engine shutdown failed: %v", err)
+	}
+
+	if !sub1Done.Load() || !sub2Done.Load() {
+		t.Fatalf("expected sub-workers to be joined even after task panic (sub1=%v, sub2=%v)",
+			sub1Done.Load(), sub2Done.Load())
+	}
+}
+

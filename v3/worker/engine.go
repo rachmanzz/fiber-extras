@@ -133,25 +133,27 @@ func (e *Engine) runTask(ctx context.Context, task Task, workerID int) {
 
 	subPool := newSubWorkerPool(ctx, e.subLimit, taskName, e.logger)
 
-	defer func() {
-		if r := recover(); r != nil {
-			stack := string(debug.Stack())
-			e.logger.Error("worker task recovered from panic",
-				"task", taskName,
-				"worker_id", workerID,
-				"panic", r,
-				"stack", stack,
-			)
-		}
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				e.logger.Error("worker task recovered from panic",
+					"task", taskName,
+					"worker_id", workerID,
+					"panic", r,
+					"stack", stack,
+				)
+				err = fmt.Errorf("worker: task %q panicked: %v", taskName, r)
+			}
+		}()
+		err = task.Execute(ctx, subPool)
 	}()
 
-	err := task.Execute(ctx, subPool)
-
 	// Join any sub-workers the task spawned. A task that forgets to call
-	// pool.Wait() would otherwise let the engine mark the task complete (and
-	// free its worker) while sub-worker work is still in flight. Joining here
-	// guarantees the engine never sees a task as done with live sub-workers and
-	// surfaces an error the task failed to propagate.
+	// pool.Wait() (or panics mid-execution) would otherwise let the engine mark
+	// the task complete (and free its worker) while sub-worker work is still in flight.
+	// Joining here guarantees the engine never sees a task as done with live sub-workers.
 	if waitErr := subPool.Wait(); waitErr != nil && err == nil {
 		err = waitErr
 	}
