@@ -42,7 +42,8 @@ type Handler func(ctx context.Context, msg *Message, pool worker.SubWorkerPool) 
 type HandlerOption func(*handlerConfig)
 
 type handlerConfig struct {
-	driverName string
+	driverName     string
+	allowOverwrite bool
 }
 
 // WithHandlerDriver specifies which queue driver this topic handler should bind to.
@@ -50,6 +51,14 @@ type handlerConfig struct {
 func WithHandlerDriver(driverName string) HandlerOption {
 	return func(cfg *handlerConfig) {
 		cfg.driverName = driverName
+	}
+}
+
+// WithAllowOverwrite allows registering a handler for a topic that was already registered,
+// overriding the previously registered handler without panicking.
+func WithAllowOverwrite() HandlerOption {
+	return func(cfg *handlerConfig) {
+		cfg.allowOverwrite = true
 	}
 }
 

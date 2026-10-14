@@ -24,6 +24,7 @@ func NewRouter() *Router {
 }
 
 // Register binds a topic to a handler with optional configuration.
+// If the topic is already registered, it panics unless WithAllowOverwrite() is specified.
 func (r *Router) Register(topic string, handler Handler, opts ...HandlerOption) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -31,6 +32,10 @@ func (r *Router) Register(topic string, handler Handler, opts ...HandlerOption) 
 	cfg := &handlerConfig{}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	if _, exists := r.routes[topic]; exists && !cfg.allowOverwrite {
+		panic("queue: multiple registrations for topic \"" + topic + "\" (use WithAllowOverwrite() if intentional)")
 	}
 
 	r.routes[topic] = TopicRoute{

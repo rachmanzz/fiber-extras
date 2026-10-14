@@ -77,9 +77,13 @@ func main() {
 ### 1.1 Important: Registration Behavior & Concurrency Patterns
 
 > [!IMPORTANT]
-> **Handler Registration & Overwrite Semantics:**
+> **Handler Registration & Overwrite Protection:**
 > - `queue.RegisterHandler(topic, handler)` binds a handler to a topic on the global router.
-> - **Overwrite Behavior**: If the same topic is registered more than once, the new handler **overwrites** the previously registered handler unconditionally.
+> - **Collision Protection**: If the same topic is registered more than once, `RegisterHandler` / `router.Register` immediately panics to prevent accidental silent route collisions across modular services.
+> - **Intentional Overwrites**: To intentionally override an existing handler (such as in unit tests or mocks), provide `queue.WithAllowOverwrite()`:
+>   ```go
+>   queue.RegisterHandler("orders.created", mockHandler, queue.WithAllowOverwrite())
+>   ```
 > - **Best Practice**: All handlers should be registered **once during application bootstrap / startup** (e.g. in `bootstrap/hook.go` or `init()`). Avoid calling `RegisterHandler` inside dynamic request handlers or concurrent worker loops.
 
 #### Global Convenience API vs. Instance-Based API

@@ -64,8 +64,8 @@ func main() {
   `EveryMonth(1, "00:00")`, `EveryWeekly("mon", "07:45")` with safe fallbacks.
 - **Production defaults** — panic recovery, skip-if-still-running (`WithoutSkipOverlap()` to allow
   overlap), 5-field specs (`WithSeconds(true)` for 6-field), base location `WithLocation(...)`.
-- **Graceful stop** — `Stop(ctx)` waits for in-flight jobs up to the deadline; they are never
-  cancelled mid-run.
+- **Graceful stop** — `Stop(ctx)` signals cancellation to in-flight tasks via context and waits
+  up to the deadline.
 - **Standalone runner** — before-start/post-shutdown hooks, OS signal handling
   (`WithSignals`, default SIGINT + SIGTERM), shutdown timeout (`WithShutdownTimeout`).
   A failing before-start hook aborts startup but still runs post-shutdown hooks.
@@ -78,8 +78,8 @@ func main() {
 - **Pluggable logging** — a minimal `Logger` interface (`NewSlogLogger`, `NopLogger`) — no zap, no
   direct slog requirement.
 
-`Register` never exits the process: invalid specs are returned as errors (the task's `OnFail` is
-still invoked) so hosts decide how to fail at startup.
+`Register` never exits the process: invalid specs are returned as errors so hosts decide how to
+fail at startup cleanly without triggering premature runtime callbacks.
 
 ## 🚀 Integration with `fiber-starter`
 

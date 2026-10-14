@@ -37,23 +37,37 @@ type FluentScheduledTask interface {
 	WriteSchedule() string
 }
 
-// TaskRunner adapts a Task to the cron engine: it runs Execute with a
-// background context, routes errors to OnError, and converts panics into
+// TaskRunner adapts a Task to the cron engine: it runs Execute with the scheduler's
+// lifecycle context, routes errors to OnError, and converts panics into
 // OnFail so a crashing task can never silently kill the schedule.
 type TaskRunner struct {
 	task Task
+	ctx  context.Context
 }
 
-// NewTaskRunner wraps task for execution by the scheduler.
-func NewTaskRunner(task Task) *TaskRunner {
-	return &TaskRunner{task: task}
+// NewTaskRunner wraps task for execution by the scheduler. An optional parent context
+// can be provided to link execution to the scheduler's shutdown cancellation.
+func NewTaskRunner(task Task, parentCtx ...context.Context) *TaskRunner {
+	c := context.Background()
+	if len(parentCtx) > 0 && parentCtx[0] != nil {
+		c = parentCtx[0]
+	}
+	return &TaskRunner{task: task, ctx: c}
+}
+
+// SetContext updates the base context used for running tasks.
+func (r *TaskRunner) SetContext(ctx context.Context) {
+	if ctx != nil {
+		r.ctx = ctx
+	}
 }
 
 // Run executes the task, converting panics into OnFail and errors into
 // OnError. It never returns an error: all outcomes are handled through the
 // task's own lifecycle hooks.
 func (r *TaskRunner) Run() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(r.ctx)
+	defer cancel()
 
 	defer func() {
 		if rec := recover(); rec != nil {

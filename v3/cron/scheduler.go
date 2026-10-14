@@ -69,6 +69,8 @@ type Scheduler struct {
 	cronEngine *cron.Cron
 	location   *time.Location
 	logger     Logger
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	specMu sync.Mutex
 	specs  []string
@@ -115,10 +117,13 @@ func NewScheduler(opts ...Option) *Scheduler {
 		cronOpts = append(cronOpts, cron.WithSeconds())
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		cronEngine: cron.New(cronOpts...),
 		location:   cfg.location,
 		logger:     cfg.logger,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -174,9 +179,7 @@ func (s *Scheduler) Register(task Task) error {
 		}
 	}
 	if spec == "" {
-		err := fmt.Errorf("cron: task %T has no schedule (implement Schedule() or WriteSchedule())", task)
-		task.OnFail(context.Background(), err)
-		return err
+		return fmt.Errorf("cron: task %T has no schedule (implement Schedule() or WriteSchedule())", task)
 	}
 
 	// Resolve the effective schedule zone: a typed Location wins over the
@@ -200,9 +203,8 @@ func (s *Scheduler) Register(task Task) error {
 		spec = fmt.Sprintf("CRON_TZ=%s %s", tzPrefix, spec)
 	}
 
-	id, err := s.AddJob(spec, NewTaskRunner(task))
+	id, err := s.AddJob(spec, NewTaskRunner(task, s.ctx))
 	if err != nil {
-		task.OnFail(context.Background(), err)
 		return err
 	}
 	s.logger.Info("cron task registered", "spec", spec, "entry", id)
@@ -210,8 +212,7 @@ func (s *Scheduler) Register(task Task) error {
 }
 
 // RegisterAll binds every task to the scheduler in order and stops at the
-// first failure (the failing task's OnFail has already been invoked). It is
-// the convenience form of calling Register for each task.
+// first failure. It is the convenience form of calling Register for each task.
 func (s *Scheduler) RegisterAll(tasks ...Task) error {
 	for _, task := range tasks {
 		if err := s.Register(task); err != nil {
@@ -227,11 +228,13 @@ func (s *Scheduler) Start() {
 	s.logger.Info("cron scheduler started", "timezone", s.location.String())
 }
 
-// Stop stops the scheduler and waits for in-flight jobs to complete, or
-// returns ctx.Err() when ctx expires first. Running jobs are given the
-// chance to finish; they are not cancelled.
+// Stop stops the scheduler, cancels the task context so in-flight tasks can terminate
+// cooperatively, and waits for in-flight jobs to complete or returns ctx.Err() when ctx expires first.
 func (s *Scheduler) Stop(ctx context.Context) error {
 	stopCtx := s.cronEngine.Stop()
+	if s.cancel != nil {
+		s.cancel()
+	}
 	select {
 	case <-stopCtx.Done():
 		s.logger.Info("cron scheduler stopped cleanly")

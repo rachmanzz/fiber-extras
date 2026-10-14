@@ -150,9 +150,10 @@ func (p *PostgresDriver) EnsureTable(ctx context.Context) error {
 	ALTER TABLE %s ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
 	ALTER TABLE %s ADD COLUMN IF NOT EXISTS acked_at TIMESTAMPTZ;
 	CREATE INDEX IF NOT EXISTS idx_%s_priority ON %s (status, process_at ASC, priority DESC, created_at ASC);
+	CREATE INDEX IF NOT EXISTS idx_%s_active ON %s (priority DESC, group_order ASC, created_at ASC) WHERE status IN ('pending', 'processing');
 	CREATE INDEX IF NOT EXISTS idx_%s_lease ON %s (status, lease_until);
 	CREATE INDEX IF NOT EXISTS idx_%s_acked ON %s (status, acked_at);
-	`, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName)
+	`, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName, p.tableName)
 
 	if _, err := p.pool.Exec(ctx, schema); err != nil {
 		return err

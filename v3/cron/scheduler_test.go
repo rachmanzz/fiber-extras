@@ -113,8 +113,8 @@ func TestScheduler_RegisterRejectsMissingSchedule(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for task without schedule")
 	}
-	if _, _, onFail, lastFail := task.snapshot(); onFail != 1 || lastFail == nil {
-		t.Fatalf("expected OnFail invoked with the registration error, got %d", onFail)
+	if _, _, onFail, _ := task.snapshot(); onFail != 0 {
+		t.Fatalf("expected OnFail NOT to be invoked on static register error, got %d", onFail)
 	}
 }
 
@@ -254,7 +254,71 @@ func TestScheduler_RegisterAllStopsAtFirstFailure(t *testing.T) {
 	if len(specs) != 1 {
 		t.Fatalf("registered %d specs, want 1 (stop at first failure)", len(specs))
 	}
-	if _, _, onFail, _ := bad.snapshot(); onFail != 1 {
-		t.Fatalf("failing task OnFail ran %d times, want 1", onFail)
+	if _, _, onFail, _ := bad.snapshot(); onFail != 0 {
+		t.Fatalf("failing task OnFail ran %d times, want 0 during registration", onFail)
+	}
+}
+
+type contextAwareTask struct {
+	schedule string
+	execute  func(ctx context.Context) error
+}
+
+func (t *contextAwareTask) Schedule() string { return t.schedule }
+func (t *contextAwareTask) Execute(ctx context.Context) error {
+	if t.execute != nil {
+		return t.execute(ctx)
+	}
+	return nil
+}
+func (t *contextAwareTask) OnError(_ context.Context, _ error) {}
+func (t *contextAwareTask) OnFail(_ context.Context, _ error)  {}
+
+func TestScheduler_StopCancelsTaskContext(t *testing.T) {
+	s := NewScheduler(WithLogger(NopLogger()), WithSeconds(true))
+	cancelled := make(chan struct{})
+	started := make(chan struct{})
+
+	task := &contextAwareTask{
+		schedule: "* * * * * *",
+		execute: func(ctx context.Context) error {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			select {
+			case <-ctx.Done():
+				close(cancelled)
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+				return nil
+			}
+		},
+	}
+
+	if err := s.Register(task); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	s.Start()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := s.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	select {
+	case <-cancelled:
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected task to receive context cancellation on Stop")
 	}
 }
