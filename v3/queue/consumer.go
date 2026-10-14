@@ -16,6 +16,11 @@ var (
 	ErrNoHandlerFound = errors.New("no handler registered for topic")
 )
 
+type groupLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
 // Consumer handles polling messages from the driver and executing them via worker.Dispatcher.
 type Consumer struct {
 	driver           Driver
@@ -26,11 +31,13 @@ type Consumer struct {
 	retryPolicy      RetryPolicy
 	logger           Logger
 	quit             chan struct{}
+	ctx              context.Context
+	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	closed           bool
 	mu               sync.Mutex
 	closeOnce        sync.Once
-	groupLocks       map[string]*sync.Mutex
+	groupLocks       map[string]*groupLockEntry
 	groupMu          sync.Mutex
 }
 
@@ -80,6 +87,7 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 	if disp == nil {
 		disp = worker.GetDispatcher()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &Consumer{
 		driver:           d,
 		router:           r,
@@ -89,7 +97,9 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 		retryPolicy:      DefaultRetryPolicy(),
 		logger:           DefaultLogger(),
 		quit:             make(chan struct{}),
-		groupLocks:       make(map[string]*sync.Mutex),
+		ctx:              ctx,
+		cancel:           cancel,
+		groupLocks:       make(map[string]*groupLockEntry),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -136,13 +146,15 @@ func (c *Consumer) pollLoop() {
 }
 
 func (c *Consumer) fetchAndProcess() int {
-	ctx := context.Background()
+	ctx := c.ctx
 	req := DequeueRequest{
 		BatchSize: c.batchSize,
 	}
 	deliveries, err := c.driver.Dequeue(ctx, req)
 	if err != nil {
-		c.logger.Error("queue consumer dequeue error", "error", err, "driver", c.driver.Name())
+		if !errors.Is(err, context.Canceled) {
+			c.logger.Error("queue consumer dequeue error", "error", err, "driver", c.driver.Name())
+		}
 		return 0
 	}
 	if len(deliveries) == 0 {
@@ -231,14 +243,16 @@ func (c *Consumer) fetchAndProcess() int {
 		gID := groupID
 		groupDeliveries := dels
 
-		lock := c.groupLock(gID)
-		lock.Lock()
+		entry := c.acquireGroupLock(gID)
 
 		// The engine's per-task pool is intentionally unused here: grouped
 		// members get a fresh pool each (see below) so a sub-worker failure in
 		// one member cannot cancel the fan-out of the next.
 		groupTask := worker.NewTaskFunc("group:"+gID, func(tCtx context.Context, _ worker.SubWorkerPool) error {
-			defer lock.Unlock()
+			// Acquire group lock inside the worker task to serialize processing across batches
+			// without blocking the main poller loop (avoids head-of-line blocking).
+			entry.mu.Lock()
+			defer c.releaseGroupLock(gID, entry)
 
 			ordered := make([]*Delivery, len(groupDeliveries))
 			copy(ordered, groupDeliveries)
@@ -318,7 +332,13 @@ func (c *Consumer) fetchAndProcess() int {
 
 		err := c.workerDispatcher.Dispatch(ctx, groupTask)
 		if err != nil {
-			lock.Unlock()
+			c.groupMu.Lock()
+			entry.refs--
+			if entry.refs <= 0 {
+				delete(c.groupLocks, gID)
+			}
+			c.groupMu.Unlock()
+
 			for _, item := range groupDeliveries {
 				_ = c.driver.Nack(ctx, item, err)
 			}
@@ -330,20 +350,32 @@ func (c *Consumer) fetchAndProcess() int {
 	return dispatched
 }
 
-// groupLock returns the per-group mutex used to serialize handling of a group
-// across polling batches, guaranteeing members are processed in ascending GroupOrder.
-func (c *Consumer) groupLock(gid string) *sync.Mutex {
+// acquireGroupLock fetches or allocates a group lock entry and increments its reference count.
+func (c *Consumer) acquireGroupLock(gid string) *groupLockEntry {
 	c.groupMu.Lock()
 	defer c.groupMu.Unlock()
 	if c.groupLocks == nil {
-		c.groupLocks = make(map[string]*sync.Mutex)
+		c.groupLocks = make(map[string]*groupLockEntry)
 	}
 	l, ok := c.groupLocks[gid]
 	if !ok {
-		l = &sync.Mutex{}
+		l = &groupLockEntry{}
 		c.groupLocks[gid] = l
 	}
+	l.refs++
 	return l
+}
+
+// releaseGroupLock unlocks the group mutex and cleans up the map entry when all referencing tasks finish.
+func (c *Consumer) releaseGroupLock(gid string, entry *groupLockEntry) {
+	entry.mu.Unlock()
+
+	c.groupMu.Lock()
+	defer c.groupMu.Unlock()
+	entry.refs--
+	if entry.refs <= 0 {
+		delete(c.groupLocks, gid)
+	}
 }
 
 func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error) error {
@@ -478,6 +510,9 @@ func (c *Consumer) Stop() {
 	c.closed = true
 	c.mu.Unlock()
 
+	if c.cancel != nil {
+		c.cancel()
+	}
 	close(c.quit)
 	c.wg.Wait()
 	c.closeOnce.Do(func() {

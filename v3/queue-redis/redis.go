@@ -11,7 +11,7 @@ import (
 )
 
 // DefaultPrefix is the default key prefix for Redis queue data structures.
-const DefaultPrefix = "fiber:queue:"
+const DefaultPrefix = "gosuite:queue:"
 
 // DefaultVisibilityTimeout is the default lease held on in-flight messages.
 // A delivered message stays in-flight until Ack/Nack; if the consumer crashes

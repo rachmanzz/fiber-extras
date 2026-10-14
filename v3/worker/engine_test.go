@@ -421,3 +421,37 @@ func TestCustomLogger(t *testing.T) {
 		t.Fatalf("expected 4 logged messages, got %d", len(logged))
 	}
 }
+
+func TestEngine_Shutdown_Drains_QueuedTasks(t *testing.T) {
+	cfg := worker.Config{
+		MaxWorkers:      2,
+		TaskQueueSize:   50,
+		ShutdownTimeout: 5 * time.Second,
+		Logger:          worker.NopLogger(),
+	}
+	engine := worker.NewEngine(cfg).Start()
+
+	var executedCount atomic.Int32
+	const totalTasks = 20
+
+	for i := 0; i < totalTasks; i++ {
+		task := worker.NewTaskFunc("drain_test", func(ctx context.Context, pool worker.SubWorkerPool) error {
+			time.Sleep(10 * time.Millisecond)
+			executedCount.Add(1)
+			return nil
+		})
+		if err := engine.Dispatch(context.Background(), task); err != nil {
+			t.Fatalf("dispatch error: %v", err)
+		}
+	}
+
+	// Immediately call Shutdown while tasks are still queued and in-flight
+	if err := engine.Shutdown(); err != nil {
+		t.Fatalf("unexpected shutdown error: %v", err)
+	}
+
+	// All tasks must have been processed
+	if got := executedCount.Load(); got != totalTasks {
+		t.Fatalf("expected all %d tasks to be drained, but only %d ran", totalTasks, got)
+	}
+}

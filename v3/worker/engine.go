@@ -35,6 +35,8 @@ type Engine struct {
 	started   bool
 	closed    bool
 	closedMu  sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
 	logger    Logger
 }
 
@@ -65,11 +67,14 @@ func NewEngine(cfg Config, opts ...Option) *Engine {
 		cfg.Logger = DefaultLogger()
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
 		cfg:       cfg,
 		taskQueue: make(chan Task, cfg.TaskQueueSize),
 		subLimit:  cfg.SubWorkerLimit,
 		quit:      make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
 		logger:    cfg.Logger,
 	}
 }
@@ -117,7 +122,7 @@ func (e *Engine) workerLoop(workerID int) {
 			if !ok {
 				return
 			}
-			e.runTask(context.Background(), task, workerID)
+			e.runTask(e.ctx, task, workerID)
 		}
 	}
 }
@@ -223,7 +228,9 @@ func (e *Engine) ExecuteSync(ctx context.Context, task Task) error {
 	return err
 }
 
-// Shutdown gracefully stops the worker engine, allowing active workers up to ShutdownTimeout to finish.
+// Shutdown gracefully stops the worker engine, allowing all queued and active workers
+// up to ShutdownTimeout to finish. It closes the task queue to drain buffered tasks,
+// and force terminates with context cancellation if ShutdownTimeout expires.
 func (e *Engine) Shutdown() error {
 	e.closedMu.Lock()
 	if e.closed {
@@ -233,7 +240,7 @@ func (e *Engine) Shutdown() error {
 	e.closed = true
 	e.closedMu.Unlock()
 
-	close(e.quit)
+	// 1. Close task queue so no new tasks are accepted and workers drain remaining items
 	close(e.taskQueue)
 
 	c := make(chan struct{})
@@ -244,9 +251,17 @@ func (e *Engine) Shutdown() error {
 
 	select {
 	case <-c:
+		if e.cancel != nil {
+			e.cancel()
+		}
 		e.logger.Info("worker engine stopped gracefully")
 		return nil
 	case <-time.After(e.cfg.ShutdownTimeout):
+		// Force termination on timeout: cancel task contexts and signal quit
+		if e.cancel != nil {
+			e.cancel()
+		}
+		close(e.quit)
 		e.logger.Warn("worker engine shutdown timed out, force terminated")
 		return fmt.Errorf("worker: engine shutdown timed out after %v", e.cfg.ShutdownTimeout)
 	}

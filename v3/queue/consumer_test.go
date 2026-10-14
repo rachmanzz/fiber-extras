@@ -593,3 +593,61 @@ func TestConsumer_GroupedMemberFanoutIsolation(t *testing.T) {
 		t.Fatal("order 0's sub-worker should have failed, but it reported completion")
 	}
 }
+
+func TestConsumer_GroupNoHeadOfLineBlocking(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 4, TaskQueueSize: 32}).Start()
+	defer engine.Shutdown()
+
+	groupAStarted := make(chan struct{})
+	unblockGroupA := make(chan struct{})
+	independentRan := make(chan struct{})
+
+	router.Register("slow.group", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		select {
+		case <-groupAStarted:
+		default:
+			close(groupAStarted)
+		}
+		<-unblockGroupA // blocks group A
+		return nil
+	})
+	router.Register("fast.independent", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		select {
+		case <-independentRan:
+		default:
+			close(independentRan)
+		}
+		return nil
+	})
+
+	consumer := queue.NewConsumer(driver, router, engine, queue.WithPollInterval(2*time.Millisecond))
+	consumer.Start()
+	defer consumer.Stop()
+
+	// Enqueue message for group A
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("slow.group", nil, queue.WithGroup("A", 1)))
+
+	// Wait until group A starts and is blocked
+	select {
+	case <-groupAStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for group A to start")
+	}
+
+	// While group A is actively blocked, enqueue another message for group A, and an independent message!
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("slow.group", nil, queue.WithGroup("A", 2)))
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("fast.independent", nil))
+
+	// The independent message MUST be processed without being blocked by group A!
+	select {
+	case <-independentRan:
+		// Success! Poller was not blocked by group A lock
+	case <-time.After(2 * time.Second):
+		t.Fatal("head-of-line blocking detected: independent message was blocked by group A")
+	}
+
+	close(unblockGroupA)
+}
+

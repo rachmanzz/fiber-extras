@@ -212,24 +212,44 @@ func (r *RabbitMQAdapter) Capabilities() queue.Capabilities {
 
 // Wire format (split transport): the AMQP Body carries the user payload as
 // raw bytes and all adapter metadata travels in AMQP headers under reserved
-// "fiber-*" keys (user headers are packed into the single "fiber-headers"
+// "gosuite-*" keys (user headers are packed into the single "gosuite-headers"
 // entry as JSON so arbitrary keys can never collide with reserved ones). The
 // payload never passes through a text encoding, so no base64 tax applies.
 // This is the only wire format: a record that is missing or cannot be decoded
 // surfaces as a poison delivery instead of being guessed.
 const (
-	hdrEnvelope    = "fiber-envelope"
-	hdrID          = "fiber-id"
-	hdrTopic       = "fiber-topic"
-	hdrPriority    = "fiber-priority"
-	hdrCreatedAt   = "fiber-created-at"
-	hdrAttempt     = "fiber-attempt"
-	hdrMaxAttempt  = "fiber-max-attempts"
-	hdrGroupID     = "fiber-group-id"
-	hdrGroupOrder  = "fiber-group-order"
-	hdrDriver      = "fiber-driver"
-	hdrUserHeaders = "fiber-headers"
+	hdrEnvelope    = "gosuite-envelope"
+	hdrID          = "gosuite-id"
+	hdrTopic       = "gosuite-topic"
+	hdrPriority    = "gosuite-priority"
+	hdrCreatedAt   = "gosuite-created-at"
+	hdrAttempt     = "gosuite-attempt"
+	hdrMaxAttempt  = "gosuite-max-attempts"
+	hdrGroupID     = "gosuite-group-id"
+	hdrGroupOrder  = "gosuite-group-order"
+	hdrDriver      = "gosuite-driver"
+	hdrUserHeaders = "gosuite-headers"
+
+	// Legacy headers for backward-compatibility with fiber-extras
+	legacyHdrEnvelope    = "fiber-envelope"
+	legacyHdrID          = "fiber-id"
+	legacyHdrTopic       = "fiber-topic"
+	legacyHdrPriority    = "fiber-priority"
+	legacyHdrCreatedAt   = "fiber-created-at"
+	legacyHdrAttempt     = "fiber-attempt"
+	legacyHdrMaxAttempt  = "fiber-max-attempts"
+	legacyHdrGroupID     = "fiber-group-id"
+	legacyHdrGroupOrder  = "fiber-group-order"
+	legacyHdrDriver      = "fiber-driver"
+	legacyHdrUserHeaders = "fiber-headers"
 )
+
+func getHeader(h amqp.Table, primary, legacy string) interface{} {
+	if v, ok := h[primary]; ok && v != nil {
+		return v
+	}
+	return h[legacy]
+}
 
 // wireVersion marks messages that use the v2 split transport.
 const wireVersion int64 = 2
@@ -285,48 +305,48 @@ func buildAMQPHeaders(msg *queue.Message) amqp.Table {
 // Corrupt or missing reserved metadata yields an error (surfaced as a poison
 // delivery by the caller).
 func decodeAMQPDelivery(d amqp.Delivery) (*queue.Message, error) {
-	if v, ok := tableInt(d.Headers[hdrEnvelope]); !ok || v != wireVersion {
+	if v, ok := tableInt(getHeader(d.Headers, hdrEnvelope, legacyHdrEnvelope)); !ok || v != wireVersion {
 		return nil, fmt.Errorf("missing v2 envelope marker")
 	}
-	id, _ := d.Headers[hdrID].(string)
+	id, _ := getHeader(d.Headers, hdrID, legacyHdrID).(string)
 	if id == "" {
 		return nil, fmt.Errorf("missing %s header", hdrID)
 	}
-	topic, _ := d.Headers[hdrTopic].(string)
+	topic, _ := getHeader(d.Headers, hdrTopic, legacyHdrTopic).(string)
 	if topic == "" {
 		return nil, fmt.Errorf("missing %s header", hdrTopic)
 	}
-	priority, ok := tableInt(d.Headers[hdrPriority])
+	priority, ok := tableInt(getHeader(d.Headers, hdrPriority, legacyHdrPriority))
 	if !ok {
 		return nil, fmt.Errorf("invalid %s header", hdrPriority)
 	}
-	createdAtStr, _ := d.Headers[hdrCreatedAt].(string)
+	createdAtStr, _ := getHeader(d.Headers, hdrCreatedAt, legacyHdrCreatedAt).(string)
 	createdAt, err := time.Parse(time.RFC3339Nano, createdAtStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s header: %w", hdrCreatedAt, err)
 	}
-	attempt, ok := tableInt(d.Headers[hdrAttempt])
+	attempt, ok := tableInt(getHeader(d.Headers, hdrAttempt, legacyHdrAttempt))
 	if !ok {
 		return nil, fmt.Errorf("invalid %s header", hdrAttempt)
 	}
-	maxAttempts, ok := tableInt(d.Headers[hdrMaxAttempt])
+	maxAttempts, ok := tableInt(getHeader(d.Headers, hdrMaxAttempt, legacyHdrMaxAttempt))
 	if !ok {
 		return nil, fmt.Errorf("invalid %s header", hdrMaxAttempt)
 	}
 	groupOrder := int64(0)
-	if v, ok := tableInt(d.Headers[hdrGroupOrder]); ok {
+	if v, ok := tableInt(getHeader(d.Headers, hdrGroupOrder, legacyHdrGroupOrder)); ok {
 		groupOrder = v
 	}
 
 	headers := map[string]string{}
-	if raw, ok := d.Headers[hdrUserHeaders].(string); ok && raw != "" {
+	if raw, ok := getHeader(d.Headers, hdrUserHeaders, legacyHdrUserHeaders).(string); ok && raw != "" {
 		if err := json.Unmarshal([]byte(raw), &headers); err != nil {
 			return nil, fmt.Errorf("invalid %s header: %w", hdrUserHeaders, err)
 		}
 	}
 
-	groupID, _ := d.Headers[hdrGroupID].(string)
-	driver, _ := d.Headers[hdrDriver].(string)
+	groupID, _ := getHeader(d.Headers, hdrGroupID, legacyHdrGroupID).(string)
+	driver, _ := getHeader(d.Headers, hdrDriver, legacyHdrDriver).(string)
 	return &queue.Message{
 		ID:          id,
 		Topic:       topic,

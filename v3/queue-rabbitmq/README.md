@@ -79,10 +79,10 @@ This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repos
 ## 📦 Wire format (split transport)
 
 The AMQP Body is the **raw payload** and all metadata travels in AMQP headers
-under reserved `fiber-*` keys (`fiber-id`, `fiber-topic`, `fiber-priority`,
-`fiber-created-at`, `fiber-attempt`, `fiber-max-attempts`, `fiber-group-id`,
-`fiber-group-order`, `fiber-driver`); user headers are packed as JSON into the
-single `fiber-headers` entry so arbitrary keys can never collide with the
+under reserved `gosuite-*` keys (`gosuite-id`, `gosuite-topic`, `gosuite-priority`,
+`gosuite-created-at`, `gosuite-attempt`, `gosuite-max-attempts`, `gosuite-group-id`,
+`gosuite-group-order`, `gosuite-driver`); user headers are packed as JSON into the
+single `gosuite-headers` entry so arbitrary keys can never collide with the
 reserved ones (`x-msg-id` is still set for tooling). There is exactly **one**
 wire format and no version negotiation: a record that is missing its envelope
 marker or cannot be decoded is surfaced as a **poison delivery** (routed to
