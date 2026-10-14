@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -197,9 +198,19 @@ func (c *Consumer) fetchAndProcess() int {
 		c.inFlight.Add(1)
 		task := worker.NewTaskFunc(m.Topic, func(tCtx context.Context, subPool worker.SubWorkerPool) error {
 			defer c.inFlight.Done()
+
+			// Bridge consumer lifecycle context (c.ctx) into the worker's execution context (tCtx)
+			execCtx, execCancel := context.WithCancel(tCtx)
+			defer execCancel()
+			stopWatch := context.AfterFunc(c.ctx, execCancel)
+			defer stopWatch()
+
+			settleCtx := context.WithoutCancel(execCtx)
+
 			handler, exists := c.router.Get(m.Topic)
 			if !exists {
-				return c.handleFailure(tCtx, d, ErrNoHandlerFound)
+				_, _, err := c.handleFailure(settleCtx, d, ErrNoHandlerFound)
+				return err
 			}
 
 			// Execute handler with access to SubWorkerPool for parallel fan-out.
@@ -216,7 +227,7 @@ func (c *Consumer) fetchAndProcess() int {
 						handlerErr = fmt.Errorf("handler panic on topic %q: %v", m.Topic, r)
 					}
 				}()
-				handlerErr = handler(tCtx, m, subPool)
+				handlerErr = handler(execCtx, m, subPool)
 			}()
 
 			// Join the handler's fan-out before settling the delivery. The
@@ -229,10 +240,11 @@ func (c *Consumer) fetchAndProcess() int {
 			}
 
 			if handlerErr != nil {
-				return c.handleFailure(tCtx, d, handlerErr)
+				_, _, err := c.handleFailure(settleCtx, d, handlerErr)
+				return err
 			}
 
-			return c.driver.Ack(tCtx, d)
+			return c.driver.Ack(settleCtx, d)
 		})
 
 		err := c.workerDispatcher.Dispatch(ctx, task)
@@ -262,6 +274,15 @@ func (c *Consumer) fetchAndProcess() int {
 		c.inFlight.Add(1)
 		groupTask := worker.NewTaskFunc("group:"+gID, func(tCtx context.Context, _ worker.SubWorkerPool) error {
 			defer c.inFlight.Done()
+
+			// Bridge consumer lifecycle context (c.ctx) into the group execution context (tCtx)
+			execCtx, execCancel := context.WithCancel(tCtx)
+			defer execCancel()
+			stopWatch := context.AfterFunc(c.ctx, execCancel)
+			defer stopWatch()
+
+			settleCtx := context.WithoutCancel(execCtx)
+
 			// Acquire group lock inside the worker task to serialize processing across batches
 			// without blocking the main poller loop (avoids head-of-line blocking).
 			entry.mu.Lock()
@@ -280,7 +301,7 @@ func (c *Consumer) fetchAndProcess() int {
 				return mi.GroupOrder < mj.GroupOrder
 			})
 
-			for _, item := range ordered {
+			for idx, item := range ordered {
 				d := item
 				m := d.Message
 				if m == nil {
@@ -288,19 +309,15 @@ func (c *Consumer) fetchAndProcess() int {
 				}
 				handler, exists := c.router.Get(m.Topic)
 				if !exists {
-					if err := c.handleFailure(tCtx, d, ErrNoHandlerFound); err != nil {
-						c.logger.Error("failed to settle message after no-handler failure",
-							"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
-						)
-					}
-					continue
+					c.handleGroupFailure(settleCtx, ordered, idx, ErrNoHandlerFound)
+					break
 				}
 
 				// A fresh sub-worker pool per member keeps one member's fan-out
 				// isolated: its failure/cancellation cannot bleed into the next
 				// member, and its sub-workers can be joined before that member is
 				// settled (Acked/retried/DLQ'd).
-				memberPool := worker.NewSubWorkerPool(tCtx, 0, m.Topic, c.logger)
+				memberPool := worker.NewSubWorkerPool(execCtx, 0, m.Topic, c.logger)
 
 				// Panics are converted to failures so retry/DLQ logic still runs.
 				// Each member is settled (Ack/retry/DLQ) before the next member starts.
@@ -315,7 +332,7 @@ func (c *Consumer) fetchAndProcess() int {
 							handlerErr = fmt.Errorf("handler panic on topic %q: %v", m.Topic, r)
 						}
 					}()
-					handlerErr = handler(tCtx, m, memberPool)
+					handlerErr = handler(execCtx, m, memberPool)
 				}()
 
 				// Join this member's fan-out before settling it, mirroring the
@@ -327,14 +344,10 @@ func (c *Consumer) fetchAndProcess() int {
 				}
 
 				if handlerErr != nil {
-					if err := c.handleFailure(tCtx, d, handlerErr); err != nil {
-						c.logger.Error("failed to settle message after handler failure",
-							"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
-						)
-					}
-					continue
+					c.handleGroupFailure(settleCtx, ordered, idx, handlerErr)
+					break
 				}
-				if err := c.driver.Ack(tCtx, d); err != nil {
+				if err := c.driver.Ack(settleCtx, d); err != nil {
 					c.logger.Error("failed to ack message",
 						"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
 					)
@@ -392,10 +405,104 @@ func (c *Consumer) releaseGroupLock(gid string, entry *groupLockEntry) {
 	}
 }
 
-func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error) error {
+func (c *Consumer) handleGroupFailure(ctx context.Context, ordered []*Delivery, failedIdx int, reason error) {
+	d := ordered[failedIdx]
+	m := d.Message
+	retried, backoff, err := c.handleFailure(ctx, d, reason)
+	if err != nil && m != nil {
+		c.logger.Error("failed to settle group message after failure",
+			"topic", m.Topic, "msg_id", m.ID, "group", m.GroupID, "error", err,
+		)
+	}
+
+	remaining := ordered[failedIdx+1:]
+	if len(remaining) == 0 {
+		return
+	}
+
+	if retried {
+		// If the failed member is scheduled for retry with backoff, subsequent members
+		// must be delayed by the same window so they do not execute out of order before
+		// the failed member's retry attempt.
+		for _, rem := range remaining {
+			if rem.Message == nil {
+				_ = c.driver.Nack(ctx, rem, reason)
+				continue
+			}
+			if delayErr := c.delayDelivery(ctx, rem, backoff, reason); delayErr != nil {
+				c.logger.Error("failed to delay downstream group member",
+					"topic", rem.Message.Topic, "msg_id", rem.Message.ID, "group", rem.Message.GroupID, "error", delayErr,
+				)
+				_ = c.driver.Nack(ctx, rem, reason)
+			}
+		}
+	} else {
+		// If the failed member cannot be retried (routed to DLQ), it has been settled.
+		// Nack remaining members in the batch back to the driver so they do not execute
+		// out of order ahead of the failed member in the current iteration.
+		for _, rem := range remaining {
+			_ = c.driver.Nack(ctx, rem, reason)
+		}
+	}
+}
+
+func (c *Consumer) delayDelivery(ctx context.Context, d *Delivery, delay time.Duration, reason error) error {
 	m := d.Message
 	if m == nil {
 		return c.driver.Nack(ctx, d, reason)
+	}
+
+	at := time.Now().Add(delay)
+	if reenqueuer, ok := c.driver.(Reenqueuer); ok {
+		return reenqueuer.Reenqueue(ctx, d, m, at)
+	}
+
+	if delayedAdapter, ok := c.driver.(DelayedEnqueuer); ok {
+		if err := delayedAdapter.EnqueueAt(ctx, m, at); err != nil {
+			return err
+		}
+		if err := c.driver.Ack(ctx, d); err != nil {
+			c.logger.Error("failed to ack delivery after delay enqueue",
+				"topic", m.Topic, "msg_id", m.ID, "error", err,
+			)
+			return err
+		}
+		return nil
+	}
+
+	// Core delayed dispatch fallback
+	var timer *time.Timer
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return c.driver.Nack(ctx, d, reason)
+	}
+	timer = time.AfterFunc(delay, func() {
+		c.mu.Lock()
+		delete(c.retryTimers, timer)
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return
+		}
+		if err := c.driver.Enqueue(context.Background(), m); err == nil {
+			_ = c.driver.Ack(context.Background(), d)
+		} else {
+			c.logger.Error("failed to enqueue delayed message in fallback",
+				"topic", m.Topic, "msg_id", m.ID, "error", err,
+			)
+			_ = c.driver.Nack(context.Background(), d, err)
+		}
+	})
+	c.retryTimers[timer] = pendingRetry{msg: m, del: d}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error) (bool, time.Duration, error) {
+	m := d.Message
+	if m == nil {
+		return false, 0, c.driver.Nack(ctx, d, reason)
 	}
 
 	maxAttempts := m.MaxAttempts
@@ -413,7 +520,7 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 			"msg_id", m.ID,
 			"error", reason,
 		)
-		return c.routeToDLQ(ctx, d, reason)
+		return false, 0, c.routeToDLQ(ctx, d, reason)
 	}
 
 	// 2. Increment core-owned attempt count
@@ -428,7 +535,7 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 			"max_attempts", maxAttempts,
 			"error", reason,
 		)
-		return c.routeToDLQ(ctx, d, reason)
+		return false, 0, c.routeToDLQ(ctx, d, reason)
 	}
 
 	// 4. Eligible for retry: calculate backoff
@@ -442,62 +549,26 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 		"error", reason,
 	)
 
-	// Reschedule the delivery. Adapters implementing Reenqueuer fold the
-	// reschedule into the current delivery itself, eliminating the crash window
-	// between Acking the delivery and enqueuing the retry copy.
-	if reenqueuer, ok := c.driver.(Reenqueuer); ok {
-		return reenqueuer.Reenqueue(ctx, d, m, time.Now().Add(backoff))
-	}
-
-	// Re-enqueue before Acking: the retry copy is scheduled first, so a failure
-	// or crash after this point at worst redelivers the original too
-	// (at-least-once) rather than losing it (at-most-once).
-	if delayedAdapter, ok := c.driver.(DelayedEnqueuer); ok {
-		if err := delayedAdapter.EnqueueAt(ctx, m, time.Now().Add(backoff)); err != nil {
-			return err
-		}
-		if err := c.driver.Ack(ctx, d); err != nil {
-			c.logger.Error("failed to ack delivery after retry enqueue (retry copy already scheduled)",
-				"topic", m.Topic, "msg_id", m.ID, "error", err,
-			)
-			return err
-		}
-		return nil
-	}
-
-	// Core delayed dispatch fallback: the adapter supports no delayed enqueue, so
-	// schedule an in-process timer to publish the retry copy at the backoff deadline,
-	// and only Ack the original delivery once the retry copy is successfully enqueued.
-	var timer *time.Timer
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return c.driver.Nack(ctx, d, reason)
-	}
-	timer = time.AfterFunc(backoff, func() {
-		c.mu.Lock()
-		delete(c.retryTimers, timer)
-		closed := c.closed
-		c.mu.Unlock()
-		if closed {
-			return
-		}
-		if err := c.driver.Enqueue(context.Background(), m); err == nil {
-			_ = c.driver.Ack(context.Background(), d)
-		} else {
-			c.logger.Error("failed to enqueue retry message in delayed fallback",
-				"topic", m.Topic, "msg_id", m.ID, "error", err,
-			)
-			_ = c.driver.Nack(context.Background(), d, err)
-		}
-	})
-	c.retryTimers[timer] = pendingRetry{msg: m, del: d}
-	c.mu.Unlock()
-	return nil
+	err := c.delayDelivery(ctx, d, backoff, reason)
+	return true, backoff, err
 }
 
 func (c *Consumer) routeToDLQ(ctx context.Context, d *Delivery, reason error) error {
 	m := d.Message
+	if m == nil {
+		return c.driver.Nack(ctx, d, reason)
+	}
+
+	if strings.HasSuffix(m.Topic, ":dlq") {
+		// Delivery is already on a DLQ topic. Do not recursively append :dlq to avoid poison loop.
+		c.logger.Error("message on DLQ topic failed with no DLQ consumer, dropping message to prevent poison loop",
+			"topic", m.Topic,
+			"msg_id", m.ID,
+			"error", reason,
+		)
+		return c.driver.Ack(ctx, d)
+	}
+
 	dlqTopic := DLQTopic(m.Topic)
 
 	if m.Headers == nil {

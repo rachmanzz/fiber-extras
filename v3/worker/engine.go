@@ -268,9 +268,20 @@ func (e *Engine) Shutdown() error {
 }
 
 // InitGlobal initializes, starts, and sets the global worker engine.
+// If a dispatcher was already registered, it is shut down cleanly to prevent
+// leaking worker goroutines.
 func InitGlobal(cfg ...Config) *Engine {
 	globalDispatcherMu.Lock()
 	defer globalDispatcherMu.Unlock()
+
+	if globalDispatcher != nil {
+		if eng, ok := globalDispatcher.(*Engine); ok {
+			_ = eng.Shutdown()
+		} else if closer, ok := globalDispatcher.(interface{ Shutdown() error }); ok {
+			_ = closer.Shutdown()
+		}
+		globalDispatcher = nil
+	}
 
 	c := DefaultConfig()
 	if len(cfg) > 0 {

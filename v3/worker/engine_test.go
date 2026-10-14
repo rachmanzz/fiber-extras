@@ -455,3 +455,23 @@ func TestEngine_Shutdown_Drains_QueuedTasks(t *testing.T) {
 		t.Fatalf("expected all %d tasks to be drained, but only %d ran", totalTasks, got)
 	}
 }
+
+func TestSubWorkerPool_ContextCancellationSurfacesError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so subworker cannot acquire semaphore slot
+	cancel()
+
+	pool := worker.NewSubWorkerPool(ctx, 2, "test_cancelled", worker.NopLogger())
+	pool.Go(func(subCtx context.Context) error {
+		return nil
+	})
+
+	err := pool.Wait()
+	if err == nil {
+		t.Fatal("expected non-nil error when pool context was cancelled, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+

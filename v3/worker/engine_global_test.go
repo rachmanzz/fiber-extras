@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,4 +170,37 @@ func TestSetGlobalDispatcher_AcceptsCustomMockDispatcher(t *testing.T) {
 		t.Fatalf("expected sync task in mock, got %v", mock.syncTasks)
 	}
 }
+
+func TestInitGlobal_ClosesPreviousEngine(t *testing.T) {
+	_ = worker.Shutdown()
+	defer func() { _ = worker.Shutdown() }()
+
+	eng1 := worker.InitGlobal(worker.Config{
+		MaxWorkers:    2,
+		TaskQueueSize: 10,
+	})
+	if eng1 == nil {
+		t.Fatal("expected non-nil eng1")
+	}
+
+	eng2 := worker.InitGlobal(worker.Config{
+		MaxWorkers:    2,
+		TaskQueueSize: 10,
+	})
+	if eng2 == nil {
+		t.Fatal("expected non-nil eng2")
+	}
+
+	task := worker.NewTaskFunc("test.closed", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		return nil
+	})
+	if err := eng1.Dispatch(context.Background(), task); !errors.Is(err, worker.ErrEngineClosed) {
+		t.Fatalf("expected ErrEngineClosed on old engine, got %v", err)
+	}
+
+	if err := eng2.Dispatch(context.Background(), task); err != nil {
+		t.Fatalf("expected eng2 dispatch to succeed, got %v", err)
+	}
+}
+
 

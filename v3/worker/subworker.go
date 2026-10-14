@@ -59,11 +59,34 @@ func (p *subWorkerPool) Go(fn SubTaskFunc) {
 	go func() {
 		defer p.wg.Done()
 
+		if err := p.ctx.Err(); err != nil {
+			cause := context.Cause(p.ctx)
+			if cause == nil {
+				cause = err
+			}
+			p.setError(cause)
+			return
+		}
+
 		// Acquire semaphore slot or abort if context canceled
 		select {
 		case p.sem <- struct{}{}:
 			defer func() { <-p.sem }()
 		case <-p.ctx.Done():
+			cause := context.Cause(p.ctx)
+			if cause == nil {
+				cause = p.ctx.Err()
+			}
+			p.setError(cause)
+			return
+		}
+
+		if err := p.ctx.Err(); err != nil {
+			cause := context.Cause(p.ctx)
+			if cause == nil {
+				cause = err
+			}
+			p.setError(cause)
 			return
 		}
 
@@ -101,6 +124,14 @@ func (p *subWorkerPool) setError(err error) {
 // It also cancels the pool context to detach from the parent context tree and prevent resource leaks.
 func (p *subWorkerPool) Wait() error {
 	p.wg.Wait()
+	if p.firstErr == nil && p.ctx.Err() != nil {
+		cause := context.Cause(p.ctx)
+		if cause != nil {
+			p.firstErr = cause
+		} else {
+			p.firstErr = p.ctx.Err()
+		}
+	}
 	p.cancel(p.firstErr)
 	return p.firstErr
 }

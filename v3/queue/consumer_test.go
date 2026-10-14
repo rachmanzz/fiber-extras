@@ -857,5 +857,93 @@ func TestConsumer_StopFlushesPendingRetryMessages(t *testing.T) {
 	}
 }
 
+func TestConsumer_GroupFailureHaltsSubsequentMembers(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
+
+	var step1Run, step2Run atomic.Bool
+
+	router.Register("group.step1", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		step1Run.Store(true)
+		return errors.New("step 1 validation failed")
+	})
+
+	router.Register("group.step2", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		step2Run.Store(true)
+		return nil
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 2, TaskQueueSize: 8})
+	engine.Start()
+	defer engine.Shutdown()
+
+	consumer := queue.NewConsumer(driver, router, engine, queue.WithPollInterval(2*time.Millisecond))
+	consumer.Start()
+	defer consumer.Stop()
+
+	// Enqueue 2 messages in the same group with order 1 and 2
+	m1 := queue.NewMessage("group.step1", []byte("data1"), queue.WithGroup("grp-1", 1))
+	m2 := queue.NewMessage("group.step2", []byte("data2"), queue.WithGroup("grp-1", 2))
+
+	_ = driver.Enqueue(context.Background(), m1)
+	_ = driver.Enqueue(context.Background(), m2)
+
+	// Wait for processing
+	time.Sleep(100 * time.Millisecond)
+
+	if !step1Run.Load() {
+		t.Fatal("expected step 1 to run and fail")
+	}
+	if step2Run.Load() {
+		t.Fatal("expected step 2 NOT to run after step 1 failed (FIFO group ordering violation)")
+	}
+}
+
+func TestConsumer_StopCancelsInFlightTaskContext(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
+
+	taskStarted := make(chan struct{})
+	contextCancelled := make(chan struct{})
+
+	router.Register("task.longrunning", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		close(taskStarted)
+		select {
+		case <-ctx.Done():
+			close(contextCancelled)
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+			return nil
+		}
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 2, TaskQueueSize: 8})
+	engine.Start()
+	defer engine.Shutdown()
+
+	consumer := queue.NewConsumer(driver, router, engine, queue.WithPollInterval(2*time.Millisecond))
+	consumer.Start()
+
+	_ = driver.Enqueue(context.Background(), queue.NewMessage("task.longrunning", []byte("payload")))
+
+	<-taskStarted
+
+	// Call Stop() on consumer: in-flight task handler must receive context cancellation
+	stopDone := make(chan struct{})
+	go func() {
+		consumer.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-contextCancelled:
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected in-flight handler context to be cancelled when consumer stops")
+	}
+
+	<-stopDone
+}
+
+
 
 

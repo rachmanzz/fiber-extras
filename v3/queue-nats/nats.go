@@ -329,6 +329,27 @@ func decodeNATSMsg(rawMsg *nats.Msg) (*queue.Message, error) {
 	}, nil
 }
 
+// sanitizeNATSToken replaces whitespace, NATS wildcard tokens (*, >), and separators
+// so arbitrary group IDs and topic strings form valid, publishable NATS subjects.
+func sanitizeNATSToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.Grow(len(token))
+	for _, r := range token {
+		switch {
+		case r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '*' || r == '>':
+			sb.WriteRune('_')
+		case r == ':':
+			sb.WriteRune('.')
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
 func (n *NATSAdapter) subjectFor(msg *queue.Message) string {
 	prioStr := "default"
 	switch {
@@ -342,10 +363,10 @@ func (n *NATSAdapter) subjectFor(msg *queue.Message) string {
 
 	groupStr := "general"
 	if msg.GroupID != "" {
-		groupStr = msg.GroupID
+		groupStr = sanitizeNATSToken(msg.GroupID)
 	}
 
-	safeTopic := strings.ReplaceAll(msg.Topic, ":", ".")
+	safeTopic := sanitizeNATSToken(msg.Topic)
 	return fmt.Sprintf("%s.%s.%s.%s", n.stream, prioStr, groupStr, safeTopic)
 }
 
