@@ -1047,3 +1047,60 @@ func TestConsumer_CrossPollGroupInversionProtected(t *testing.T) {
 		t.Errorf("expected third execution to be step2, got %s", order[2])
 	}
 }
+
+func TestConsumer_HandlerWithExplicitSubWorkerWaitAcked(t *testing.T) {
+	driver := queue.NewMemoryDriver()
+	router := queue.NewRouter()
+
+	var subCompleted atomic.Int32
+	var handlerCompleted atomic.Bool
+
+	router.Register("task.fanout_wait", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+		for i := 0; i < 3; i++ {
+			pool.Go(func(sCtx context.Context) error {
+				time.Sleep(10 * time.Millisecond)
+				subCompleted.Add(1)
+				return nil
+			})
+		}
+		// Explicit wait inside handler
+		if err := pool.Wait(); err != nil {
+			return err
+		}
+		handlerCompleted.Store(true)
+		return nil
+	})
+
+	engine := worker.NewEngine(worker.Config{MaxWorkers: 2, TaskQueueSize: 8})
+	engine.Start()
+	defer engine.Shutdown()
+
+	consumer := queue.NewConsumer(driver, router, engine, queue.WithPollInterval(2*time.Millisecond))
+	consumer.Start()
+	defer consumer.Stop()
+
+	msg := queue.NewMessage("task.fanout_wait", []byte("payload"))
+	if err := driver.Enqueue(context.Background(), msg); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for (!handlerCompleted.Load() || subCompleted.Load() != 3) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !handlerCompleted.Load() {
+		t.Fatal("expected handler to complete successfully")
+	}
+	if subCompleted.Load() != 3 {
+		t.Fatalf("expected 3 sub-workers to complete, got %d", subCompleted.Load())
+	}
+
+	// Verify that the message was acknowledged and not left pending or retried
+	time.Sleep(50 * time.Millisecond)
+	deliveries, _ := driver.Dequeue(context.Background(), queue.DequeueRequest{BatchSize: 10})
+	if len(deliveries) != 0 {
+		t.Fatalf("expected delivery to be acknowledged, but found %d unacked/retried deliveries", len(deliveries))
+	}
+}
+

@@ -511,3 +511,53 @@ func TestEngine_TaskPanicJoinsSubWorkers(t *testing.T) {
 	}
 }
 
+func TestSubWorkerPool_WaitIdempotency(t *testing.T) {
+	ctx := context.Background()
+	pool := worker.NewSubWorkerPool(ctx, 2, "test_idempotent_wait", worker.NopLogger())
+
+	var subRun atomic.Bool
+	pool.Go(func(sCtx context.Context) error {
+		subRun.Store(true)
+		return nil
+	})
+
+	// First call to Wait
+	if err := pool.Wait(); err != nil {
+		t.Fatalf("first Wait() failed: %v", err)
+	}
+	if !subRun.Load() {
+		t.Fatal("expected sub-worker to have executed")
+	}
+
+	// Second and third calls to Wait must be idempotent and not return context.Canceled
+	if err := pool.Wait(); err != nil {
+		t.Fatalf("second Wait() returned spurious error: %v", err)
+	}
+	if err := pool.Wait(); err != nil {
+		t.Fatalf("third Wait() returned spurious error: %v", err)
+	}
+}
+
+func TestEngine_ExecuteSyncWithCallerWait(t *testing.T) {
+	engine := worker.New(worker.WithLogger(worker.NopLogger()))
+	defer func() { _ = engine.Shutdown() }()
+
+	var subDone atomic.Bool
+	task := worker.NewTaskFunc("sync:caller-wait", func(ctx context.Context, pool worker.SubWorkerPool) error {
+		pool.Go(func(sCtx context.Context) error {
+			time.Sleep(10 * time.Millisecond)
+			subDone.Store(true)
+			return nil
+		})
+		// Caller explicitly waits for sub-workers
+		return pool.Wait()
+	})
+
+	// ExecuteSync should succeed with nil and not return "context canceled" from subsequent engine pool.Wait()
+	if err := engine.ExecuteSync(context.Background(), task); err != nil {
+		t.Fatalf("ExecuteSync failed when task called pool.Wait(): %v", err)
+	}
+	if !subDone.Load() {
+		t.Fatal("expected sub-worker to be completed")
+	}
+}

@@ -14,6 +14,7 @@ type subWorkerPool struct {
 	sem      chan struct{}
 	wg       sync.WaitGroup
 	errOnce  sync.Once
+	waitOnce sync.Once
 	firstErr error
 	taskName string
 	logger   Logger
@@ -122,16 +123,19 @@ func (p *subWorkerPool) setError(err error) {
 
 // Wait blocks until all sub-workers have completed and returns the first error encountered.
 // It also cancels the pool context to detach from the parent context tree and prevent resource leaks.
+// Subsequent calls to Wait are idempotent and return the same error without re-evaluating context cancellation.
 func (p *subWorkerPool) Wait() error {
-	p.wg.Wait()
-	if p.firstErr == nil && p.ctx.Err() != nil {
-		cause := context.Cause(p.ctx)
-		if cause != nil {
-			p.firstErr = cause
-		} else {
-			p.firstErr = p.ctx.Err()
+	p.waitOnce.Do(func() {
+		p.wg.Wait()
+		if p.firstErr == nil && p.ctx.Err() != nil {
+			cause := context.Cause(p.ctx)
+			if cause != nil {
+				p.firstErr = cause
+			} else {
+				p.firstErr = p.ctx.Err()
+			}
 		}
-	}
-	p.cancel(p.firstErr)
+		p.cancel(p.firstErr)
+	})
 	return p.firstErr
 }
