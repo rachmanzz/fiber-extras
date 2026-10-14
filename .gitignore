@@ -39,3 +39,5 @@ Thumbs.db
 .knowledges/
 
 temp/
+issue-detector
+issue-detector.yaml
