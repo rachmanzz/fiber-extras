@@ -365,3 +365,21 @@ func TestQueue_MemoryDriver_EnqueueAtAfterClose(t *testing.T) {
 		t.Fatalf("expected no deliveries after close, got %d", len(deliveries))
 	}
 }
+
+func TestQueue_NilMessageRejected(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. queue.Enqueue(nil)
+	if err := queue.Enqueue(ctx, nil); !errors.Is(err, queue.ErrNilMessage) {
+		t.Fatalf("queue.Enqueue(nil): expected ErrNilMessage, got %v", err)
+	}
+
+	// 2. MemoryDriver.Enqueue(nil)
+	mem := queue.NewMemoryDriver()
+	if err := mem.Enqueue(ctx, nil); !errors.Is(err, queue.ErrNilMessage) {
+		t.Fatalf("mem.Enqueue(nil): expected ErrNilMessage, got %v", err)
+	}
+	if err := mem.EnqueueAt(ctx, nil, time.Now()); !errors.Is(err, queue.ErrNilMessage) {
+		t.Fatalf("mem.EnqueueAt(nil): expected ErrNilMessage, got %v", err)
+	}
+}

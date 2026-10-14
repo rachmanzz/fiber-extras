@@ -162,13 +162,22 @@ func (p *PostgresDriver) EnsureTable(ctx context.Context) error {
 	return nil
 }
 
+// ErrNilMessage is returned when attempting to enqueue a nil message.
+var ErrNilMessage = errors.New("queue-postgres: cannot enqueue nil message")
+
 // Enqueue inserts a message into the queue table with immediate processing time.
 func (p *PostgresDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	return p.EnqueueAt(ctx, msg, time.Now())
 }
 
 // EnqueueAt inserts a message scheduled to be processed at a future timestamp.
 func (p *PostgresDriver) EnqueueAt(ctx context.Context, msg *queue.Message, at time.Time) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	headers, err := marshalHeaders(msg.Headers)
 	if err != nil {
 		return fmt.Errorf("queue-postgres: failed to encode headers: %w", err)

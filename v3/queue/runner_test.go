@@ -101,6 +101,12 @@ func TestRunner_BeforeStartHookError(t *testing.T) {
 	runner := queue.NewRunner(consumer)
 	expectedErr := errors.New("database connection failed")
 
+	var postShutdownCalled int32
+	runner.RegisterPostShutdown(func() error {
+		atomic.AddInt32(&postShutdownCalled, 1)
+		return nil
+	})
+
 	runner.RegisterBeforeStart(func() error {
 		return expectedErr
 	})
@@ -111,6 +117,9 @@ func TestRunner_BeforeStartHookError(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error wrapping %v, got %v", expectedErr, err)
+	}
+	if atomic.LoadInt32(&postShutdownCalled) != 1 {
+		t.Fatalf("expected postShutdown hook to run on BeforeStart failure, got %d", postShutdownCalled)
 	}
 }
 

@@ -58,3 +58,17 @@ func TestNATSAdapter_CapabilityConsistency(t *testing.T) {
 		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
 	}
 }
+
+func TestNATSAdapter_DefaultStreamName(t *testing.T) {
+	if got := queuenats.DefaultConfig().Stream; got != "GOSUITE_QUEUE" {
+		t.Fatalf("expected default Stream 'GOSUITE_QUEUE', got %q", got)
+	}
+}
+
+func TestNATSAdapter_NilMessageRejected(t *testing.T) {
+	adapter := &queuenats.NATSAdapter{}
+	err := adapter.Enqueue(nil, nil)
+	if err == nil || err.Error() != queuenats.ErrNilMessage.Error() {
+		t.Fatalf("expected ErrNilMessage on Enqueue(nil), got %v", err)
+	}
+}

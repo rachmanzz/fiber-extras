@@ -38,10 +38,13 @@ type Config struct {
 	DedupWindow time.Duration
 }
 
+// ErrNilMessage is returned when attempting to enqueue a nil message.
+var ErrNilMessage = errors.New("queue-nats: cannot enqueue nil message")
+
 // DefaultConfig returns recommended production defaults.
 func DefaultConfig() Config {
 	return Config{
-		Stream:        "FIBER_QUEUE",
+		Stream:        "GOSUITE_QUEUE",
 		Storage:       "file",
 		AckWait:       30 * time.Second,
 		MaxAckPending: 1000,
@@ -100,7 +103,7 @@ func New(nc *nats.Conn, opts ...Option) (*NATSAdapter, error) {
 // NewWithConfig instantiates a NATS JetStream queue adapter with explicit config.
 func NewWithConfig(nc *nats.Conn, cfg Config) (*NATSAdapter, error) {
 	if cfg.Stream == "" {
-		cfg.Stream = "FIBER_QUEUE"
+		cfg.Stream = "GOSUITE_QUEUE"
 	}
 	if cfg.AckWait <= 0 {
 		cfg.AckWait = 30 * time.Second
@@ -343,6 +346,9 @@ func (n *NATSAdapter) subjectFor(msg *queue.Message) string {
 
 // Enqueue publishes a message to NATS JetStream.
 func (n *NATSAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	n.mu.RLock()
 	if n.closed {
 		n.mu.RUnlock()

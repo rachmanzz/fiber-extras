@@ -27,6 +27,9 @@ var (
 	// stale tag on the fresh channel would kill it with an
 	// "unknown delivery tag" channel exception.
 	errStaleDelivery = errors.New("queue-rabbitmq: delivery belongs to a previous connection")
+
+	// ErrNilMessage is returned when attempting to enqueue a nil message.
+	ErrNilMessage = errors.New("queue-rabbitmq: cannot enqueue nil message")
 )
 
 // deliveryToken pins a delivery tag to the channel generation that produced
@@ -71,7 +74,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		URL:              "amqp://guest:guest@localhost:5672/",
-		QueueName:        "fiber_priority_queue",
+		QueueName:        "gosuite_priority_queue",
 		MaxPriority:      10,
 		Prefetch:         100,
 		ReconnectInitial: 100 * time.Millisecond,
@@ -465,6 +468,9 @@ func settleError(err error) error {
 // Enqueue publishes a message into RabbitMQ with persistent delivery mode and priority.
 // v2 split transport: the Body is the raw payload; metadata travels in AMQP headers.
 func (r *RabbitMQAdapter) Enqueue(ctx context.Context, msg *queue.Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	pub := amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		Priority:     mapPriority(msg.Priority),

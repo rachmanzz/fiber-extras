@@ -2,6 +2,7 @@ package queueredis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// ErrNilMessage is returned when attempting to enqueue a nil message.
+var ErrNilMessage = errors.New("queue-redis: cannot enqueue nil message")
 
 // DefaultPrefix is the default key prefix for Redis queue data structures.
 const DefaultPrefix = "gosuite:queue:"
@@ -294,6 +298,9 @@ func (r *RedisDriver) reclaimExpired(ctx context.Context, nowScore float64) erro
 // enqueue writes the v2 split record (raw payload + msgpack metadata) into the
 // message hash and adds the message to the given ZSet with the given score.
 func (r *RedisDriver) enqueue(ctx context.Context, msg *queue.Message, key string, score float64) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	meta, err := encodeMeta(msg)
 	if err != nil {
 		return fmt.Errorf("queue-redis: failed to encode metadata: %w", err)
@@ -315,6 +322,9 @@ func (r *RedisDriver) enqueue(ctx context.Context, msg *queue.Message, key strin
 
 // Enqueue serializes and pushes a message into the Redis priority ZSet and message hash.
 func (r *RedisDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	// Score is Priority (higher priority = higher score).
 	// Sub-score tie-breaker: timestamp unix seconds deducted
 	score := float64(msg.Priority)*1e9 - float64(msg.CreatedAt.Unix())
@@ -323,6 +333,9 @@ func (r *RedisDriver) Enqueue(ctx context.Context, msg *queue.Message) error {
 
 // EnqueueAt schedules a message to become active at a specific future timestamp.
 func (r *RedisDriver) EnqueueAt(ctx context.Context, msg *queue.Message, at time.Time) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	// In delayed ZSet, score is unix timestamp with fractional seconds
 	score := float64(at.UnixNano()) / 1e9
 	return r.enqueue(ctx, msg, r.delayedKey(), score)

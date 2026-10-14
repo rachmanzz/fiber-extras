@@ -64,6 +64,9 @@ func memoryLess(a, b *Message) bool {
 }
 
 func (m *MemoryDriver) Enqueue(ctx context.Context, msg *Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -134,6 +137,9 @@ func (m *MemoryDriver) Reenqueue(ctx context.Context, d *Delivery, msg *Message,
 }
 
 func (m *MemoryDriver) EnqueueAt(ctx context.Context, msg *Message, at time.Time) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	delay := time.Until(at)
 	if delay <= 0 {
 		return m.Enqueue(ctx, msg)

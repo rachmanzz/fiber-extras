@@ -115,6 +115,8 @@ func (r *Runner) RegisterBeforeStart(hook Hook) {
 }
 
 // RegisterPostShutdown registers a hook to execute after consumers have stopped.
+// It always runs -- including on startup failure -- so resources opened by
+// before-start hooks can be released.
 func (r *Runner) RegisterPostShutdown(hook Hook) {
 	if hook == nil {
 		return
@@ -158,6 +160,7 @@ func (r *Runner) Run(ctx ...context.Context) error {
 	for i, hook := range r.beforeStartHooks {
 		if err := hook(); err != nil {
 			r.logger.Error("queue runner: before-start hook failed", "hook_index", i, "error", err)
+			_ = r.runPostShutdownHooks()
 			return fmt.Errorf("queue runner: before-start hook %d failed: %w", i, err)
 		}
 	}
@@ -172,6 +175,7 @@ func (r *Runner) Run(ctx ...context.Context) error {
 	if len(consumers) == 0 {
 		globalConsumer, err := StartConsumer()
 		if err != nil {
+			_ = r.runPostShutdownHooks()
 			return fmt.Errorf("queue runner: failed to start default consumer: %w", err)
 		}
 		consumers = append(consumers, globalConsumer)
@@ -246,6 +250,10 @@ func (r *Runner) shutdown(consumers []*Consumer, usingGlobal bool) error {
 	}
 
 	// 6. Execute PostShutdown Hooks in FIFO order
+	return r.runPostShutdownHooks()
+}
+
+func (r *Runner) runPostShutdownHooks() error {
 	r.logger.Info("queue runner: executing post-shutdown hooks", "count", len(r.postShutdownHooks))
 	var hookErr error
 	for i, hook := range r.postShutdownHooks {

@@ -3,6 +3,7 @@ package queueredis_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/rachmanzz/gosuite/v3/queue"
 
@@ -91,5 +92,20 @@ func TestRedisDriver_CapabilityConsistency(t *testing.T) {
 	}
 	if caps.DelayedEnqueue != delayed {
 		t.Fatalf("DelayedEnqueue capability (%v) disagrees with DelayedEnqueuer implementation (%v)", caps.DelayedEnqueue, delayed)
+	}
+}
+
+func TestRedisDriver_NilMessageRejected(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	defer client.Close()
+
+	driver := queueredis.New(client)
+	ctx := context.Background()
+
+	if err := driver.Enqueue(ctx, nil); err == nil || err.Error() != queueredis.ErrNilMessage.Error() {
+		t.Fatalf("expected ErrNilMessage on Enqueue(nil), got %v", err)
+	}
+	if err := driver.EnqueueAt(ctx, nil, time.Now()); err == nil || err.Error() != queueredis.ErrNilMessage.Error() {
+		t.Fatalf("expected ErrNilMessage on EnqueueAt(nil), got %v", err)
 	}
 }

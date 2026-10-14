@@ -39,6 +39,7 @@ type Consumer struct {
 	closeOnce        sync.Once
 	groupLocks       map[string]*groupLockEntry
 	groupMu          sync.Mutex
+	retryTimers      map[*time.Timer]struct{}
 }
 
 // ConsumerOption configures parameters of a Consumer.
@@ -100,6 +101,7 @@ func NewConsumer(d Driver, r *Router, disp worker.Dispatcher, opts ...ConsumerOp
 		ctx:              ctx,
 		cancel:           cancel,
 		groupLocks:       make(map[string]*groupLockEntry),
+		retryTimers:      make(map[*time.Timer]struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -454,16 +456,32 @@ func (c *Consumer) handleFailure(ctx context.Context, d *Delivery, reason error)
 	// Core delayed dispatch fallback: the adapter supports no delayed enqueue, so
 	// schedule an immediate in-process re-enqueue and then Ack. This mirrors the
 	// old behaviour but enqueues before dropping the original.
-	time.AfterFunc(backoff, func() {
+	var timer *time.Timer
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return c.driver.Nack(ctx, d, reason)
+	}
+	timer = time.AfterFunc(backoff, func() {
+		c.mu.Lock()
+		delete(c.retryTimers, timer)
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return
+		}
 		_ = c.driver.Enqueue(context.Background(), m)
 	})
+	c.retryTimers[timer] = struct{}{}
+	c.mu.Unlock()
+
 	if err := c.driver.Ack(ctx, d); err != nil {
 		c.logger.Error("failed to ack delivery after retry scheduled",
 			"topic", m.Topic, "msg_id", m.ID, "error", err,
 		)
 		return err
 	}
-	return reason
+	return nil
 }
 
 func (c *Consumer) routeToDLQ(ctx context.Context, d *Delivery, reason error) error {
@@ -508,6 +526,10 @@ func (c *Consumer) Stop() {
 		return
 	}
 	c.closed = true
+	for t := range c.retryTimers {
+		t.Stop()
+	}
+	c.retryTimers = nil
 	c.mu.Unlock()
 
 	if c.cancel != nil {

@@ -96,3 +96,15 @@ func TestWithTableName_RejectsInvalidIdentifier(t *testing.T) {
 		t.Fatal("expected valid table name to be accepted")
 	}
 }
+
+func TestPostgresDriver_NilMessageRejected(t *testing.T) {
+	driver := queuepostgres.New(nil, queuepostgres.WithTableName("custom_queue"))
+	ctx := context.Background()
+
+	if err := driver.Enqueue(ctx, nil); !errors.Is(err, queuepostgres.ErrNilMessage) {
+		t.Fatalf("Enqueue(nil): expected ErrNilMessage, got %v", err)
+	}
+	if err := driver.EnqueueAt(ctx, nil, time.Now()); !errors.Is(err, queuepostgres.ErrNilMessage) {
+		t.Fatalf("EnqueueAt(nil): expected ErrNilMessage, got %v", err)
+	}
+}

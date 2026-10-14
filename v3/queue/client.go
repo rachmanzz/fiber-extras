@@ -10,6 +10,7 @@ import (
 var (
 	ErrDriverNotConfigured = errors.New("queue: driver is not configured")
 	ErrConsumerNotRunning  = errors.New("queue: consumer is not running")
+	ErrNilMessage          = errors.New("queue: cannot enqueue nil message")
 )
 
 // Producer defines the interface for enqueuing messages from services.
@@ -127,6 +128,9 @@ func RegisterHandler(topic string, handler Handler, opts ...HandlerOption) {
 
 // Enqueue sends a Message into the appropriate driver queue based on msg.Driver, topic routing, or default.
 func Enqueue(ctx context.Context, msg *Message) error {
+	if msg == nil {
+		return ErrNilMessage
+	}
 	targetDriverName := msg.Driver
 
 	if targetDriverName == "" {

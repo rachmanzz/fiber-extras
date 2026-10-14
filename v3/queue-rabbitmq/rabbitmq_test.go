@@ -47,3 +47,17 @@ func TestRabbitMQAdapter_DedupCapabilityReflectsReality(t *testing.T) {
 		t.Fatal("expected RabbitMQ Dedup capability to be false (no dedup mechanism)")
 	}
 }
+
+func TestRabbitMQAdapter_DefaultQueueName(t *testing.T) {
+	if got := queuerabbitmq.DefaultConfig().QueueName; got != "gosuite_priority_queue" {
+		t.Fatalf("expected default QueueName 'gosuite_priority_queue', got %q", got)
+	}
+}
+
+func TestRabbitMQAdapter_NilMessageRejected(t *testing.T) {
+	adapter := &queuerabbitmq.RabbitMQAdapter{}
+	err := adapter.Enqueue(nil, nil)
+	if err == nil || err.Error() != queuerabbitmq.ErrNilMessage.Error() {
+		t.Fatalf("expected ErrNilMessage on Enqueue(nil), got %v", err)
+	}
+}
