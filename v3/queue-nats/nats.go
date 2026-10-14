@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
 // NATSAdapter implements queue.Adapter for NATS JetStream.

@@ -1,6 +1,6 @@
 # NATS JetStream Adapter for Queue Core
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue-nats.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue-nats)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue-nats.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue-nats)
 
 High-throughput, cloud-native NATS JetStream adapter for [`v3/queue`](../queue) with WorkQueue retention, automatic deduplication, and prioritized pull consumers.
 
@@ -9,8 +9,8 @@ High-throughput, cloud-native NATS JetStream adapter for [`v3/queue`](../queue) 
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/queue
-go get github.com/rachmanzz/fiber-extras/v3/queue-nats
+go get github.com/rachmanzz/gosuite/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue-nats
 ```
 
 ---
@@ -24,9 +24,9 @@ import (
     "context"
 
     "github.com/nats-io/nats.go"
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    queuenats "github.com/rachmanzz/fiber-extras/v3/queue-nats"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    queuenats "github.com/rachmanzz/gosuite/v3/queue-nats"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func main() {

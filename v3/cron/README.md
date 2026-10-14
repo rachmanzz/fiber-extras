@@ -10,7 +10,7 @@ framework. Hosts wire their own Execute logic into tasks.
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/cron@latest
+go get github.com/rachmanzz/gosuite/v3/cron@latest
 ```
 
 ## 📖 Quickstart
@@ -22,7 +22,7 @@ import (
     "context"
     "os"
 
-    "github.com/rachmanzz/fiber-extras/v3/cron"
+    "github.com/rachmanzz/gosuite/v3/cron"
 )
 
 type cleanupTask struct{}
@@ -117,7 +117,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/rachmanzz/fiber-extras/v3/cron"
+    "github.com/rachmanzz/gosuite/v3/cron"
 )
 
 const TopicCronPartitionMaintain = "events:partition:maintain"
@@ -182,7 +182,7 @@ func (t *RetentionCronTask) OnFail(ctx context.Context, e error)  { /* ... */ }
 package events
 
 import (
-    "github.com/rachmanzz/fiber-extras/v3/cron"
+    "github.com/rachmanzz/gosuite/v3/cron"
     "github.com/rachmanzz/fiber-starter/app/events/crons"
 )
 
@@ -204,7 +204,7 @@ import (
     "os"
     "time"
 
-    "github.com/rachmanzz/fiber-extras/v3/cron"
+    "github.com/rachmanzz/gosuite/v3/cron"
     "github.com/rachmanzz/fiber-starter/app/events"
 )
 

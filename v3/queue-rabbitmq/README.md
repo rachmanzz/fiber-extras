@@ -1,6 +1,6 @@
 # RabbitMQ Adapter for Queue Core
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue-rabbitmq.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue-rabbitmq)
 
 AMQP 0.9.1 RabbitMQ adapter for [`v3/queue`](../queue) supporting hardware-enforced priority queues (`x-max-priority=10`) and manual message acknowledgments.
 
@@ -9,8 +9,8 @@ AMQP 0.9.1 RabbitMQ adapter for [`v3/queue`](../queue) supporting hardware-enfor
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/queue
-go get github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq
+go get github.com/rachmanzz/gosuite/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue-rabbitmq
 ```
 
 ---
@@ -23,9 +23,9 @@ package main
 import (
     "context"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    queuerabbitmq "github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    queuerabbitmq "github.com/rachmanzz/gosuite/v3/queue-rabbitmq"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func main() {

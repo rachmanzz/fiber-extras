@@ -1,4 +1,4 @@
-module github.com/rachmanzz/fiber-extras/v3/cron
+module github.com/rachmanzz/gosuite/v3/cron
 
 go 1.26.0
 

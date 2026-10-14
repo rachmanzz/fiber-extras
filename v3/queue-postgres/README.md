@@ -1,6 +1,6 @@
 # PostgreSQL Adapter for Queue Core
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue-postgres.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue-postgres)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue-postgres.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue-postgres)
 
 Transactional PostgreSQL adapter for [`v3/queue`](../queue) utilizing the `SELECT ... FOR UPDATE SKIP LOCKED` pattern, ideal for transactional outbox queueing without requiring extra broker infrastructure.
 
@@ -28,8 +28,8 @@ _, _ = adapter.PurgeAcked(ctx, time.Now().Add(-24*time.Hour))
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/queue
-go get github.com/rachmanzz/fiber-extras/v3/queue-postgres
+go get github.com/rachmanzz/gosuite/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue-postgres
 ```
 
 ---
@@ -43,9 +43,9 @@ import (
     "context"
 
     "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    queuepostgres "github.com/rachmanzz/fiber-extras/v3/queue-postgres"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    queuepostgres "github.com/rachmanzz/gosuite/v3/queue-postgres"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func main() {

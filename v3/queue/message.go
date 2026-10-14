@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rachmanzz/fiber-extras/v3/worker"
+	"github.com/rachmanzz/gosuite/v3/worker"
 )
 
 // Priority represents message execution order priority.

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
 // DefaultTableName is the default table name for storing queue messages.

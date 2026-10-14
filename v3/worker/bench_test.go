@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rachmanzz/fiber-extras/v3/worker"
+	"github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func BenchmarkWorker_Dispatch_Async(b *testing.B) {

@@ -3,8 +3,8 @@ package queuerabbitmq_test
 import (
 	"testing"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuerabbitmq "github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuerabbitmq "github.com/rachmanzz/gosuite/v3/queue-rabbitmq"
 )
 
 var _ queue.Adapter = (*queuerabbitmq.RabbitMQAdapter)(nil)

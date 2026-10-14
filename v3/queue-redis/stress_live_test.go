@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queueredis "github.com/rachmanzz/fiber-extras/v3/queue-redis"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queueredis "github.com/rachmanzz/gosuite/v3/queue-redis"
 	"github.com/redis/go-redis/v9"
 )
 

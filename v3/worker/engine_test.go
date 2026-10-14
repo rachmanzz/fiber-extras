@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/worker"
+	"github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func TestEngine_Parallel_And_SubWorkers(t *testing.T) {

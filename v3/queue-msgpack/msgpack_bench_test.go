@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuemsgpack "github.com/rachmanzz/fiber-extras/v3/queue-msgpack"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuemsgpack "github.com/rachmanzz/gosuite/v3/queue-msgpack"
 )
 
 // benchPayload mirrors a realistic small background-job payload.

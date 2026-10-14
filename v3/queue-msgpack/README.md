@@ -1,6 +1,6 @@
 # MessagePack Codec for Queue Core
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue-msgpack.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue-msgpack)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue-msgpack.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue-msgpack)
 
 Pluggable [`queue.Codec`](../queue) implementation that encodes message payloads with **MessagePack** instead of JSON. Because codecs sit at the payload boundary, this works with **every** `v3/queue` adapter (memory, Redis, NATS, RabbitMQ, PostgreSQL) without a single driver change.
 
@@ -9,8 +9,8 @@ Pluggable [`queue.Codec`](../queue) implementation that encodes message payloads
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/queue
-go get github.com/rachmanzz/fiber-extras/v3/queue-msgpack
+go get github.com/rachmanzz/gosuite/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue-msgpack
 ```
 
 ---
@@ -20,7 +20,7 @@ go get github.com/rachmanzz/fiber-extras/v3/queue-msgpack
 ### Producer (dispatch)
 
 ```go
-import queuemsgpack "github.com/rachmanzz/fiber-extras/v3/queue-msgpack"
+import queuemsgpack "github.com/rachmanzz/gosuite/v3/queue-msgpack"
 
 // Opt into MessagePack on a per-message basis:
 queue.Dispatch(context.Background(), "user:welcome_email", WelcomeEmail{
@@ -39,9 +39,9 @@ import (
     "context"
     "fmt"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    queuemsgpack "github.com/rachmanzz/fiber-extras/v3/queue-msgpack"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    queuemsgpack "github.com/rachmanzz/gosuite/v3/queue-msgpack"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func RegisterQueueTopics() {
@@ -68,7 +68,7 @@ func RegisterQueueTopics() {
 The producer and consumer are different processes. The **consumer** must still wire the codec; a bare import is the minimal wiring because `init()` performs the registration:
 
 ```go
-import _ "github.com/rachmanzz/fiber-extras/v3/queue-msgpack" // registers application/msgpack via init()
+import _ "github.com/rachmanzz/gosuite/v3/queue-msgpack" // registers application/msgpack via init()
 ```
 
 Without any registration the consumer fails with `no codec registered for content-type "application/msgpack"`. To skip the registry entirely, decode explicitly:

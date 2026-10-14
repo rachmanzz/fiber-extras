@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
 // benchMessage builds a realistic message with a binary payload -- the shape

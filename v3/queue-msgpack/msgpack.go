@@ -7,7 +7,7 @@
 package queuemsgpack
 
 import (
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 	"github.com/vmihailenco/msgpack/v5"
 )
 

@@ -12,8 +12,8 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuenats "github.com/rachmanzz/fiber-extras/v3/queue-nats"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuenats "github.com/rachmanzz/gosuite/v3/queue-nats"
 )
 
 func randSuffix(t *testing.T) string {

@@ -1,6 +1,6 @@
 # Queue Core for Go
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue)
 
 Pluggable, multi-driver asynchronous message queuing orchestrator with strict priority ordering, group-based batching, centralized exponential backoff retries, and dead-letter queue (DLQ) management.
 
@@ -14,14 +14,14 @@ Designed around the **Ports & Adapters (Hexagonal)** architecture:
 
 ```bash
 # Core queue engine (includes In-Memory driver)
-go get github.com/rachmanzz/fiber-extras/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue
 
 # Optional transport adapters (install only what you need):
-go get github.com/rachmanzz/fiber-extras/v3/queue-redis     # Redis Priority ZSet & delayed
-go get github.com/rachmanzz/fiber-extras/v3/queue-postgres  # PostgreSQL SKIP LOCKED transactional
-go get github.com/rachmanzz/fiber-extras/v3/queue-nats      # NATS JetStream WorkQueue
-go get github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq  # RabbitMQ AMQP 0.9.1
-go get github.com/rachmanzz/fiber-extras/v3/queue-msgpack   # Optional MessagePack payload codec
+go get github.com/rachmanzz/gosuite/v3/queue-redis     # Redis Priority ZSet & delayed
+go get github.com/rachmanzz/gosuite/v3/queue-postgres  # PostgreSQL SKIP LOCKED transactional
+go get github.com/rachmanzz/gosuite/v3/queue-nats      # NATS JetStream WorkQueue
+go get github.com/rachmanzz/gosuite/v3/queue-rabbitmq  # RabbitMQ AMQP 0.9.1
+go get github.com/rachmanzz/gosuite/v3/queue-msgpack   # Optional MessagePack payload codec
 ```
 
 ---
@@ -48,8 +48,8 @@ import (
     "fmt"
     "time"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func main() {
@@ -89,10 +89,10 @@ Real-world applications often need different broker guarantees for different tas
 
 ```go
 import (
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    redisadapter "github.com/rachmanzz/fiber-extras/v3/queue-redis"
-    pgadapter "github.com/rachmanzz/fiber-extras/v3/queue-postgres"
-    natsadapter "github.com/rachmanzz/fiber-extras/v3/queue-nats"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    redisadapter "github.com/rachmanzz/gosuite/v3/queue-redis"
+    pgadapter "github.com/rachmanzz/gosuite/v3/queue-postgres"
+    natsadapter "github.com/rachmanzz/gosuite/v3/queue-nats"
 )
 
 func SetupQueues(pgPool *pgxpool.Pool, rdb *redis.Client, js nats.JetStreamContext) {
@@ -167,9 +167,9 @@ import (
 
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/redis/go-redis/v9"
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    redisadapter "github.com/rachmanzz/fiber-extras/v3/queue-redis"
-    pgadapter "github.com/rachmanzz/fiber-extras/v3/queue-postgres"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    redisadapter "github.com/rachmanzz/gosuite/v3/queue-redis"
+    pgadapter "github.com/rachmanzz/gosuite/v3/queue-postgres"
 )
 
 func main() {
@@ -273,8 +273,8 @@ Attach the broker adapter and register topics inside the application's lifecycle
 package bootstrap
 
 import (
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    redisadapter "github.com/rachmanzz/fiber-extras/v3/queue-redis"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    redisadapter "github.com/rachmanzz/gosuite/v3/queue-redis"
     "github.com/rachmanzz/fiber-starter/app/events"
     "github.com/rachmanzz/fiber-starter/cores"
     redisprovider "github.com/rachmanzz/fiber-starter/providers/redis"
@@ -327,8 +327,8 @@ import (
     "encoding/json"
     "fmt"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 const TopicEmailWelcome = "user.welcome_email"
@@ -358,7 +358,7 @@ Register handlers in `app/events/queue.go`:
 package events
 
 import (
-    "github.com/rachmanzz/fiber-extras/v3/queue"
+    "github.com/rachmanzz/gosuite/v3/queue"
     "github.com/rachmanzz/fiber-starter/app/events/queues"
 )
 
@@ -380,7 +380,7 @@ package services
 import (
     "context"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
+    "github.com/rachmanzz/gosuite/v3/queue"
     "github.com/rachmanzz/fiber-starter/app/events/queues"
 )
 
@@ -417,8 +417,8 @@ import (
     "os"
     "time"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    redisadapter "github.com/rachmanzz/fiber-extras/v3/queue-redis"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    redisadapter "github.com/rachmanzz/gosuite/v3/queue-redis"
     "github.com/rachmanzz/fiber-starter/app/events"
     "github.com/rachmanzz/fiber-starter/cores"
     redisprovider "github.com/rachmanzz/fiber-starter/providers/redis"
@@ -503,7 +503,7 @@ Payload serialization is pluggable through the `queue.Codec` interface. JSON is 
 
 ```go
 // Optional MessagePack codec (separate module, zero impact unless imported)
-import queuemsgpack "github.com/rachmanzz/fiber-extras/v3/queue-msgpack"
+import queuemsgpack "github.com/rachmanzz/gosuite/v3/queue-msgpack"
 
 queue.Dispatch(ctx, "user:welcome_email", payload,
     queue.WithCodec(queuemsgpack.Codec()), // serialized as MessagePack
@@ -530,7 +530,7 @@ Measured using Go's standard benchmarking framework (`go test -bench=. -benchmem
 ```text
 goos: linux
 goarch: amd64
-pkg: github.com/rachmanzz/fiber-extras/v3/queue
+pkg: github.com/rachmanzz/gosuite/v3/queue
 cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
 BenchmarkQueue_Memory_EnqueueDequeue-8   	17391493	       137.6 ns/op	      56 B/op	       3 allocs/op
 BenchmarkQueue_Message_Creation-8        	 6782758	       345.2 ns/op	     288 B/op	       4 allocs/op

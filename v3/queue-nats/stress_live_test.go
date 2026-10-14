@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuenats "github.com/rachmanzz/fiber-extras/v3/queue-nats"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuenats "github.com/rachmanzz/gosuite/v3/queue-nats"
 )
 
 // stressErr records the first background error so a failure surfaces

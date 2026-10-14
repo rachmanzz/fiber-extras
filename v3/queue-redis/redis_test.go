@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 
-	queueredis "github.com/rachmanzz/fiber-extras/v3/queue-redis"
+	queueredis "github.com/rachmanzz/gosuite/v3/queue-redis"
 	"github.com/redis/go-redis/v9"
 )
 

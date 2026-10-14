@@ -1,6 +1,6 @@
 # Worker Engine for Go
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/worker.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/worker)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/worker.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/worker)
 
 High-performance background worker engine and task concurrency orchestrator for Go, extracted and refined from real-world production workloads.
 
@@ -14,7 +14,7 @@ Engineered around three core principles:
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/worker
+go get github.com/rachmanzz/gosuite/v3/worker
 ```
 
 ---
@@ -43,7 +43,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 func main() {
@@ -96,7 +96,7 @@ Hook the worker engine directly into `core.RegisterBeforeStart` and Fiber's `OnP
 package bootstrap
 
 import (
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/worker"
     "github.com/rachmanzz/fiber-starter/cores"
     "go.uber.org/zap"
 )
@@ -140,7 +140,7 @@ package workers
 
 import (
     "context"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/worker"
 )
 
 type CleanupTask struct {
@@ -180,7 +180,7 @@ package services
 
 import (
     "context"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/worker"
     "your-project/app/events/workers"
 )
 
@@ -213,7 +213,7 @@ Measured using Go's standard benchmarking framework (`go test -bench=. -benchmem
 ```text
 goos: linux
 goarch: amd64
-pkg: github.com/rachmanzz/fiber-extras/v3/worker
+pkg: github.com/rachmanzz/gosuite/v3/worker
 cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
 BenchmarkWorker_Dispatch_Async-8     	18459042	       201.8 ns/op	      78 B/op	       1 allocs/op
 BenchmarkWorker_ExecuteSync-8        	19908550	       186.0 ns/op	     320 B/op	       4 allocs/op

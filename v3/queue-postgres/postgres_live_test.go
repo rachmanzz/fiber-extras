@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuepostgres "github.com/rachmanzz/fiber-extras/v3/queue-postgres"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuepostgres "github.com/rachmanzz/gosuite/v3/queue-postgres"
 )
 
 func randSuffix(t *testing.T) string {

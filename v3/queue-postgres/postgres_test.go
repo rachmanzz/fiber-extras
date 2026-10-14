@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuepostgres "github.com/rachmanzz/fiber-extras/v3/queue-postgres"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuepostgres "github.com/rachmanzz/gosuite/v3/queue-postgres"
 )
 
 var (

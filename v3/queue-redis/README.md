@@ -1,6 +1,6 @@
 # Redis Adapter for Queue Core
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/fiber-extras/v3/queue-redis.svg)](https://pkg.go.dev/github.com/rachmanzz/fiber-extras/v3/queue-redis)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachmanzz/gosuite/v3/queue-redis.svg)](https://pkg.go.dev/github.com/rachmanzz/gosuite/v3/queue-redis)
 
 High-performance Redis adapter for [`v3/queue`](../queue) implementing priority queues and scheduled delayed enqueue via Redis Sorted Sets (`ZSet`) and Hashes.
 
@@ -9,8 +9,8 @@ High-performance Redis adapter for [`v3/queue`](../queue) implementing priority 
 ## 📦 Installation
 
 ```bash
-go get github.com/rachmanzz/fiber-extras/v3/queue
-go get github.com/rachmanzz/fiber-extras/v3/queue-redis
+go get github.com/rachmanzz/gosuite/v3/queue
+go get github.com/rachmanzz/gosuite/v3/queue-redis
 ```
 
 ---
@@ -24,9 +24,9 @@ import (
     "context"
     "fmt"
 
-    "github.com/rachmanzz/fiber-extras/v3/queue"
-    queueredis "github.com/rachmanzz/fiber-extras/v3/queue-redis"
-    "github.com/rachmanzz/fiber-extras/v3/worker"
+    "github.com/rachmanzz/gosuite/v3/queue"
+    queueredis "github.com/rachmanzz/gosuite/v3/queue-redis"
+    "github.com/rachmanzz/gosuite/v3/worker"
     "github.com/redis/go-redis/v9"
 )
 

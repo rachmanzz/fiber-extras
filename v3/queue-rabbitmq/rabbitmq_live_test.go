@@ -12,8 +12,8 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	queuerabbitmq "github.com/rachmanzz/fiber-extras/v3/queue-rabbitmq"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	queuerabbitmq "github.com/rachmanzz/gosuite/v3/queue-rabbitmq"
 )
 
 func randSuffix(t *testing.T) string {

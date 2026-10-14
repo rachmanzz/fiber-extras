@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
 // TestNATSAdapter_CloseStopsRetryTimers guards B16: internal retry timers spawned

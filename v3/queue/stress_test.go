@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
-	"github.com/rachmanzz/fiber-extras/v3/worker"
+	"github.com/rachmanzz/gosuite/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/worker"
 )
 
 // goroutineSignatures counts live goroutine stack signatures, ignoring the

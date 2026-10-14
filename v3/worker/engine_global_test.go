@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rachmanzz/fiber-extras/v3/worker"
+	"github.com/rachmanzz/gosuite/v3/worker"
 )
 
 // TestEngine_StartIsIdempotent guards NEW-C1: a second Start() must not spawn a

@@ -1,4 +1,4 @@
-module github.com/rachmanzz/fiber-extras/v3/worker
+module github.com/rachmanzz/gosuite/v3/worker
 
 go 1.26.0
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rachmanzz/fiber-extras/v3/queue"
+	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
 func BenchmarkQueue_Memory_EnqueueDequeue(b *testing.B) {
