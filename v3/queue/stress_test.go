@@ -413,8 +413,9 @@ func TestStress_Consumer_RetryStormThenDLQ(t *testing.T) {
 	})
 	router.Register(queue.DLQTopic("stress.fail"), func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
 		dlqMu.Lock()
-		dlqIDs[msg.ID]++
-		dlqRec[msg.ID] = dlqRecord{
+		originalID := msg.Headers["original_message_id"]
+		dlqIDs[originalID]++
+		dlqRec[originalID] = dlqRecord{
 			reason:        msg.Headers["dlq_reason"],
 			originalTopic: msg.Headers["original_topic"],
 		}

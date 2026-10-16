@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -206,16 +207,12 @@ func (c *Consumer) fetchAndProcess() int {
 			return 0
 		}
 	}
-	deliveries, err := c.driver.Dequeue(ctx, req)
-	if err != nil {
-		if admission != nil {
-			_ = admission.Close()
-		}
-		if !errors.Is(err, context.Canceled) {
-			c.logger.Error("queue consumer dequeue error", "error", err, "driver", c.driver.Name())
-		}
-		return 0
+	deliveries, dequeueErr := c.driver.Dequeue(ctx, req)
+	if dequeueErr != nil && !errors.Is(dequeueErr, context.Canceled) {
+		c.logger.Error("queue consumer dequeue error", "error", dequeueErr, "driver", c.driver.Name())
 	}
+	// A broker may have claimed deliveries before a later fetch failed. They
+	// still require admission, ordering and settlement, even with an error.
 	if len(deliveries) == 0 {
 		if admission != nil {
 			_ = admission.Close()
@@ -244,6 +241,25 @@ func (c *Consumer) fetchAndProcess() int {
 		refs = append(refs, admissionRef{gid: m.GroupID, entry: entry})
 		entries[d] = entry
 		c.rememberGroupDelivery(entry, m)
+	}
+	// Stop may cancel polling after the broker claimed this partial batch.
+	// Remember group positions before returning it so an unsettled original
+	// cannot be bypassed; cancellation must not disable the Nack operation.
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		if admission != nil {
+			_ = admission.Close()
+		}
+		settleCtx := context.WithoutCancel(ctx)
+		for _, d := range deliveries {
+			if d == nil || d.Message == nil {
+				continue
+			}
+			c.updateGroupSettlement(entries[d], d.Message, true, c.pollInterval)
+			if err := c.driver.Nack(settleCtx, d, cancelErr); err != nil {
+				c.logger.Error("failed to return delivery after dequeue cancellation", "topic", d.Message.Topic, "msg_id", d.Message.ID, "error", err)
+			}
+		}
+		return 0
 	}
 	var scopes map[*Delivery]*memoryScope
 	if c.memoryBudget != nil {
@@ -388,7 +404,7 @@ func (c *Consumer) fetchAndProcess() int {
 			scope.finish()
 			// If worker engine task queue is full (backpressure), do not drop message!
 			// Nack immediately so broker/adapter can redeliver later when worker has capacity.
-			_ = c.driver.Nack(ctx, d, err)
+			_ = c.driver.Nack(context.WithoutCancel(ctx), d, err)
 			continue
 		}
 		dispatched++
@@ -543,6 +559,10 @@ func (c *Consumer) fetchAndProcess() int {
 		dispatched += len(groupDeliveries)
 	}
 
+	if dequeueErr != nil {
+		// Work was accepted, but defer the next fetch to the next poll interval.
+		return 0
+	}
 	return dispatched
 }
 
@@ -761,21 +781,32 @@ func (c *Consumer) routeToDLQ(ctx context.Context, d *Delivery, reason error) er
 
 	dlqTopic := DLQTopic(m.Topic)
 
-	if m.Headers == nil {
-		m.Headers = make(map[string]string)
+	// A DLQ publication is a separate stored message. Reusing the original ID
+	// would overwrite ID-keyed storage and let the original Ack delete it.
+	// Each transfer gets a fresh ID, including after an ambiguous/failed Ack;
+	// DLQ handlers can deduplicate by original_topic/original_message_id.
+	headers := make(map[string]string, len(m.Headers)+6)
+	for k, v := range m.Headers {
+		headers[k] = v
 	}
-	m.Headers["dlq_reason"] = reason.Error()
-	m.Headers["dlq_failed_at"] = time.Now().Format(time.RFC3339)
-	m.Headers["original_topic"] = m.Topic
+	headers["dlq_reason"] = reason.Error()
+	headers["dlq_failed_at"] = time.Now().Format(time.RFC3339)
+	headers["original_topic"] = m.Topic
+	headers["original_message_id"] = m.ID
+	headers["original_group_id"] = m.GroupID
+	headers["original_group_order"] = fmt.Sprint(m.GroupOrder)
 
 	dlqMsg := &Message{
-		ID:          m.ID,
-		Topic:       dlqTopic,
-		Payload:     m.Payload,
-		Priority:    PriorityLow,
-		GroupID:     m.GroupID,
-		GroupOrder:  m.GroupOrder,
-		Headers:     m.Headers,
+		ID:    NewUUID(),
+		Topic: dlqTopic,
+		// Handlers may run concurrently with original settlement/redelivery.
+		// Give each DLQ publication its own backing buffer.
+		Payload:  bytes.Clone(m.Payload),
+		Priority: PriorityLow,
+		// DLQ processing must not join the original work group: a low-priority
+		// DLQ head could otherwise starve behind later, higher-priority members.
+		// Original ordering information remains available in the headers.
+		Headers:     headers,
 		CreatedAt:   time.Now(),
 		Attempt:     m.Attempt,
 		MaxAttempts: m.MaxAttempts,
@@ -1015,7 +1046,7 @@ func (c *Consumer) dispatchGroupBatch(ctx context.Context, gid string, entry *gr
 			next.release()
 			c.inFlight.Done()
 			for _, d := range next.deliveries {
-				_ = c.driver.Nack(ctx, d, err)
+				_ = c.driver.Nack(context.WithoutCancel(ctx), d, err)
 			}
 		}
 		return err

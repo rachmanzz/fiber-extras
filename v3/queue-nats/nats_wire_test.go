@@ -2,9 +2,11 @@ package queuenats
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/rachmanzz/gosuite/v3/queue"
 )
 
@@ -123,5 +125,65 @@ func TestWire_V2RoundTrip(t *testing.T) {
 	}
 	if got.Headers["k"] != "v" {
 		t.Fatalf("user header lost: %+v", got.Headers)
+	}
+}
+
+func TestWire_RedeliveryPreservesHandlerAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		base      int
+		delivered uint64
+		want      int
+	}{
+		{"first_delivery", 3, 1, 3},
+		{"native_nak_zero_base", 0, 2, 0},
+		{"native_nak_nonzero_base", 3, 2, 3},
+		{"multiple_naks", 3, 4, 3},
+		{"largest_valid_attempt", int(^uint(0) >> 1), 2, int(^uint(0) >> 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := queue.NewMessage("job:dlq", []byte("payload"))
+			m.Attempt = tc.base
+			raw := buildNATSMsg("S.low.general.job_dlq", m)
+			raw.Sub = &nats.Subscription{}
+			raw.Reply = fmt.Sprintf("$JS.ACK.STREAM.CONSUMER.%d.1.2.1.0", tc.delivered)
+			meta, err := raw.Metadata()
+			if err != nil || meta.NumDelivered != tc.delivered {
+				t.Fatalf("invalid fixture: %v %v", meta, err)
+			}
+			decoded, err := decodeNATSMsg(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Attempt != tc.want {
+				t.Fatalf("attempt=%d, want %d", decoded.Attempt, tc.want)
+			}
+			// Re-decoding the same delivery must not compound the offset.
+			again, err := decodeNATSMsg(raw)
+			if err != nil || again.Attempt != tc.want {
+				t.Fatalf("second decode: %+v %v", again, err)
+			}
+			if raw.Header.Get(hdrAttempt) != fmt.Sprint(tc.base) {
+				t.Fatal("decode mutated published attempt")
+			}
+			// A republished message starts a fresh broker-delivery count.
+			republished := buildNATSMsg(raw.Subject, decoded)
+			republished.Sub = &nats.Subscription{}
+			republished.Reply = "$JS.ACK.STREAM.CONSUMER.1.2.1.1.0"
+			roundTrip, err := decodeNATSMsg(republished)
+			if err != nil || roundTrip.Attempt != tc.want {
+				t.Fatalf("republish: %+v %v", roundTrip, err)
+			}
+		})
+	}
+}
+func TestWire_NegativeHandlerAttemptRejected(t *testing.T) {
+	m := queue.NewMessage("job", nil)
+	m.Attempt = -1
+	raw := buildNATSMsg("S.default.general.job", m)
+	raw.Sub = &nats.Subscription{}
+	raw.Reply = "$JS.ACK.STREAM.CONSUMER.2.1.2.1.0"
+	if _, err := decodeNATSMsg(raw); err == nil {
+		t.Fatal("negative attempt accepted")
 	}
 }

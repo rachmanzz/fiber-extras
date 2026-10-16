@@ -13,6 +13,7 @@ type auditDLQOriginalAckDriver struct {
 	*MemoryDriver
 	originalUnsettled bool
 	failOriginalAck   bool
+	delayed           []*Message
 }
 
 func (d *auditDLQOriginalAckDriver) Ack(_ context.Context, del *Delivery) error {
@@ -25,11 +26,32 @@ func (d *auditDLQOriginalAckDriver) Ack(_ context.Context, del *Delivery) error 
 	}
 	return nil
 }
+
+// Hold delayed copies so tests control redelivery without wall-clock timers.
+func (d *auditDLQOriginalAckDriver) Reenqueue(_ context.Context, _ *Delivery, m *Message, _ time.Time) error {
+	d.delayed = append(d.delayed, m)
+	return nil
+}
 func TestDLQCopyCannotReleaseUnsettledOriginal(t *testing.T) {
+	for _, budget := range []bool{false, true} {
+		t.Run(map[bool]string{false: "batch_one", true: "memory_budget"}[budget], func(t *testing.T) {
+			testDLQCopyCannotReleaseUnsettledOriginal(t, budget)
+		})
+	}
+}
+func testDLQCopyCannotReleaseUnsettledOriginal(t *testing.T, budget bool) {
 	d := &auditDLQOriginalAckDriver{MemoryDriver: NewMemoryDriver(), failOriginalAck: true}
 	router := NewRouter()
 	disp := &budgetDispatcher{}
 	laterRan := false
+	dlqCalls := 0
+	router.Register("x:dlq", func(_ context.Context, m *Message, _ worker.SubWorkerPool) error {
+		dlqCalls++
+		if m.GroupID != "" || m.GroupOrder != 0 || m.Headers["original_group_id"] != "g" || m.Headers["original_group_order"] != "1" {
+			t.Fatalf("DLQ still participates in original group or lost metadata: %+v", m)
+		}
+		return nil
+	})
 	router.Register("x", func(_ context.Context, m *Message, _ worker.SubWorkerPool) error {
 		if m.GroupOrder == 1 {
 			return ErrNoHandlerFound
@@ -37,7 +59,13 @@ func TestDLQCopyCannotReleaseUnsettledOriginal(t *testing.T) {
 		laterRan = true
 		return nil
 	})
-	c := NewConsumer(d, router, disp, WithBatchSize(1), WithLogger(worker.NopLogger()))
+	opts := []ConsumerOption{WithBatchSize(1), WithLogger(worker.NopLogger())}
+	var memory *MemoryBudget
+	if budget {
+		memory = NewMemoryBudget(4096)
+		opts = append(opts, WithMemoryBudget(memory), WithMemoryEstimate(512))
+	}
+	c := NewConsumer(d, router, disp, opts...)
 	defer c.Stop()
 	head := NewMessage("x", nil, WithGroup("g", 1))
 	d.Enqueue(context.Background(), head)
@@ -47,14 +75,14 @@ func TestDLQCopyCannotReleaseUnsettledOriginal(t *testing.T) {
 		t.Fatal("original Ack failure not exercised")
 	}
 	expireGroupBackoff(c, "g")
-	// DLQ has the same ID and GroupID, but is a separate delivery.
+	// Independent DLQ handling must not settle or release the original barrier.
 	c.fetchAndProcess()
 	runBudgetTasks(t, disp)
 	later := NewMessage("x", nil, WithGroup("g", 2))
 	d.Enqueue(context.Background(), later)
 	c.fetchAndProcess()
 	runBudgetTasks(t, disp)
-	if laterRan || !d.originalUnsettled {
+	if dlqCalls != 1 || laterRan || !d.originalUnsettled {
 		t.Fatal("DLQ copy released original barrier")
 	}
 	c.groupMu.Lock()
@@ -70,16 +98,30 @@ func TestDLQCopyCannotReleaseUnsettledOriginal(t *testing.T) {
 	d.Enqueue(context.Background(), head)
 	c.fetchAndProcess()
 	runBudgetTasks(t, disp)
-	// Settle the ready DLQ copy before redelivering the held later member.
-	c.fetchAndProcess()
-	runBudgetTasks(t, disp)
-	d.Enqueue(context.Background(), later)
-	c.fetchAndProcess()
-	runBudgetTasks(t, disp)
-	if !laterRan || d.originalUnsettled {
-		t.Fatal("group did not resume after original settlement")
+	// Ack failure can publish multiple distinct DLQ copies. Make every delayed
+	// member visible explicitly and drain them before expecting later progress.
+	for i := 0; i < 10; i++ {
+		pending := d.delayed
+		d.delayed = nil
+		for _, m := range pending {
+			d.Enqueue(context.Background(), m)
+		}
+		if c.groupLocks["g"] != nil {
+			expireGroupBackoff(c, "g")
+		}
+		c.fetchAndProcess()
+		runBudgetTasks(t, disp)
+		if laterRan && dlqCalls == 2 {
+			break
+		}
 	}
 
+	if !laterRan || d.originalUnsettled || dlqCalls != 2 {
+		t.Fatalf("group did not resume: later=%v unsettled=%v entry=%+v delayed=%+v", laterRan, d.originalUnsettled, c.groupLocks["g"], d.delayed)
+	}
+	if c.batchSize != 1 || len(c.groupLocks) != 0 || (memory != nil && memory.Used() != 0) {
+		t.Fatal("recovery changed batch size or retained group state/memory claims")
+	}
 }
 func TestOversizeRetryHeadReleasesBarrierAfterDLQ(t *testing.T) {
 	b := NewMemoryBudget(4096)

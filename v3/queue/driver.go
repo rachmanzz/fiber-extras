@@ -65,7 +65,9 @@ type Adapter interface {
 	// Enqueue pushes a message into the broker queue following priority.
 	Enqueue(ctx context.Context, msg *Message) error
 
-	// Dequeue fetches messages using the DequeueRequest specification.
+	// Dequeue fetches messages using the DequeueRequest specification. A nonempty
+	// result may accompany an error after a partial fetch. Every returned delivery
+	// is claimed and must be settled, regardless of the error.
 	Dequeue(ctx context.Context, req DequeueRequest) ([]*Delivery, error)
 
 	// Ack marks the message as successfully processed in the broker using its delivery token.

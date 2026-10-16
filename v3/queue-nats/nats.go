@@ -2,6 +2,7 @@ package queuenats
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -15,16 +16,15 @@ import (
 
 // NATSAdapter implements queue.Adapter for NATS JetStream.
 type NATSAdapter struct {
-	mu          sync.RWMutex
-	nc          *nats.Conn
-	js          nats.JetStreamContext
-	stream      string
-	critSub     *nats.Subscription
-	highSub     *nats.Subscription
-	defaultSub  *nats.Subscription
-	lowSub      *nats.Subscription
-	closed      bool
-	retryTimers map[*time.Timer]struct{}
+	mu         sync.RWMutex
+	nc         *nats.Conn
+	js         nats.JetStreamContext
+	stream     string
+	critSub    *nats.Subscription
+	highSub    *nats.Subscription
+	defaultSub *nats.Subscription
+	lowSub     *nats.Subscription
+	closed     bool
 }
 
 // Config holds parameters for JetStream queue adapter.
@@ -220,6 +220,7 @@ const (
 	hdrTopic      = "fiber-topic"
 	hdrPriority   = "fiber-priority"
 	hdrCreatedAt  = "fiber-created-at"
+	hdrNotBefore  = "fiber-not-before"
 	hdrAttempt    = "fiber-attempt"
 	hdrMaxAttempt = "fiber-max-attempts"
 	hdrGroupID    = "fiber-group-id"
@@ -240,7 +241,7 @@ func buildNATSMsg(subject string, msg *queue.Message) *nats.Msg {
 		Data:    msg.Payload,
 		Header:  nats.Header{},
 	}
-	m.Header.Set("Nats-Msg-Id", msg.ID)
+	m.Header.Set(nats.MsgIdHdr, publicationID(msg))
 	m.Header.Set(hdrEnvelope, wireVersion)
 	m.Header.Set(hdrID, msg.ID)
 	m.Header.Set(hdrTopic, msg.Topic)
@@ -261,6 +262,17 @@ func buildNATSMsg(subject string, msg *queue.Message) *nats.Msg {
 		m.Header.Set(hdrUserPrefix+k, v)
 	}
 	return m
+}
+
+// Logical IDs remain stable across retries. A new handler-failure attempt
+// needs its own dedup identity, while a repeated publish of that attempt must
+// still deduplicate (including after a lost publish response or original Ack).
+func publicationID(msg *queue.Message) string {
+	if msg.Attempt == 0 {
+		return msg.ID
+	}
+	key := fmt.Sprintf("%d:%s%d:%s:%d", len(msg.Topic), msg.Topic, len(msg.ID), msg.ID, msg.Attempt)
+	return fmt.Sprintf("gosuite-retry:%x", sha256.Sum256([]byte(key)))
 }
 
 // decodeNATSMsg rebuilds a queue.Message from a v2 split-transport nats.Msg.
@@ -290,10 +302,11 @@ func decodeNATSMsg(rawMsg *nats.Msg) (*queue.Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid %s: %w", hdrAttempt, err)
 	}
-	if meta, mErr := rawMsg.Metadata(); mErr == nil && meta.NumDelivered > 1 {
-		// When JetStream redelivers via Nak/NakWithDelay, the header reflects the
-		// initial attempt (0). Derive current attempt from JetStream delivery metadata.
-		attempt = int(meta.NumDelivered) - 1
+	// Attempt is core-owned handler-failure state, not the broker delivery count.
+	// Admission, worker rejection, group deferral and lease recovery must leave
+	// it unchanged. Reenqueue publishes an updated envelope after a failure.
+	if attempt < 0 {
+		return nil, fmt.Errorf("invalid %s: negative attempt", hdrAttempt)
 	}
 	maxAttempts, err := strconv.Atoi(rawMsg.Header.Get(hdrMaxAttempt))
 	if err != nil {
@@ -411,52 +424,78 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 	subs := []*nats.Subscription{n.critSub, n.highSub, n.defaultSub, n.lowSub}
 	deliveries := make([]*queue.Delivery, 0, batchSize)
 
-	for _, sub := range subs {
-		if sub == nil || len(deliveries) >= batchSize {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for i, sub := range subs {
+		if len(deliveries) >= batchSize {
 			break
 		}
-		if ctx != nil && ctx.Err() != nil {
+		if sub == nil {
+			continue
+		}
+		if ctx.Err() != nil {
 			return deliveries, ctx.Err()
 		}
 
 		remaining := batchSize - len(deliveries)
-		var fetchOpts []nats.PullOpt
-		if ctx != nil {
-			if _, ok := ctx.Deadline(); ok {
-				fetchOpts = append(fetchOpts, nats.Context(ctx))
-			} else {
-				fetchOpts = append(fetchOpts, nats.MaxWait(20*time.Millisecond))
+		// An empty priority must not use the caller's entire deadline. Bound
+		// each Fetch and share short deadlines with priorities still to poll,
+		// leaving an extra slice for request/processing overhead.
+		wait := 20 * time.Millisecond
+		if deadline, ok := ctx.Deadline(); ok {
+			left := time.Until(deadline)
+			if left <= 0 {
+				return deliveries, context.DeadlineExceeded
 			}
-		} else {
-			fetchOpts = append(fetchOpts, nats.MaxWait(20*time.Millisecond))
+			if share := left / time.Duration(len(subs)-i+1); share < wait {
+				wait = share
+			}
 		}
-		msgs, err := sub.Fetch(remaining, fetchOpts...)
+		fetchCtx, cancel := context.WithTimeout(ctx, wait)
+		msgs, err := sub.Fetch(remaining, nats.Context(fetchCtx))
+		cancel()
 		if err != nil {
-			if errorsIsTimeout(err) {
+			if parentErr := ctx.Err(); parentErr != nil {
+				return deliveries, parentErr
+			}
+			if errorsIsTimeout(err) || errors.Is(err, context.DeadlineExceeded) {
+				// Only this priority's time slice ended; keep polling the rest.
 				continue
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return deliveries, err
-			}
-			return nil, err
+			return deliveries, err
 		}
 
-		for _, rawMsg := range msgs {
+		for j, rawMsg := range msgs {
 			m, err := decodeNATSMsg(rawMsg)
+			var readyAt time.Time
+			if err == nil && rawMsg.Header.Get(hdrNotBefore) != "" {
+				readyAt, err = time.Parse(time.RFC3339Nano, rawMsg.Header.Get(hdrNotBefore))
+			}
 			if err != nil {
 				// Undecodable or non-split-transport record: publish a poison
-				// copy before terminating the original -- if this fails the
-				// original stays unacked and is redelivered by JetStream
-				// instead of being silently lost.
-				poisonID := rawMsg.Header.Get("Nats-Msg-Id")
-				if poisonID == "" {
-					poisonID = queue.NewUUID()
-				}
-				poison := queue.NewPoisonMessage(poisonID, rawMsg.Data, err, n.Name())
+				// copy before terminating the original. On failure, release
+				// this record and the unvisited tail, preserving the valid
+				// prefix for the caller to settle.
+				// Poison publication must not deduplicate against the corrupt source.
+				poison := queue.NewPoisonMessage(queue.NewUUID(), rawMsg.Data, err, n.Name())
+				poison.Headers["source_message_id"] = rawMsg.Header.Get(hdrID)
+				poison.Headers["source_publication_id"] = rawMsg.Header.Get(nats.MsgIdHdr)
 				if pErr := n.Enqueue(ctx, poison); pErr != nil {
-					return nil, fmt.Errorf("queue-nats: failed to surface undecodable message to DLQ: %w", pErr)
+					return deliveries, releaseFetchedMessages(msgs[j:], fmt.Errorf("queue-nats: failed to surface undecodable message to DLQ: %w", pErr))
 				}
-				_ = rawMsg.Term()
+				if err := rawMsg.Term(); err != nil {
+					return deliveries, releaseFetchedMessages(msgs[j:], err)
+				}
+				continue
+			}
+
+			if delay := time.Until(readyAt); delay > 0 {
+				// The retry is already durable. Keep it on the server until due,
+				// without exposing it to a handler or incrementing Attempt.
+				if err := rawMsg.NakWithDelay(delay); err != nil {
+					return deliveries, releaseFetchedMessages(msgs[j:], err)
+				}
 				continue
 			}
 
@@ -470,64 +509,69 @@ func (n *NATSAdapter) Dequeue(ctx context.Context, req queue.DequeueRequest) ([]
 	return deliveries, nil
 }
 
-// Reenqueue republishes the retry copy at the target time and only then
-// acknowledges the current delivery. Publishing before the Ack removes the
-// ack-then-enqueue crash window: if the process dies in between, the original
-// delivery is still unacked and is redelivered by JetStream instead of being lost.
-// Reenqueue reschedules the message using JetStream native NakWithDelay if delay > 0,
-// or republishes and acknowledges. Using native NakWithDelay delegates delay scheduling
-// directly to the JetStream server, avoiding in-process timers and AckWait expiration.
+// releaseFetchedMessages releases claims that cannot be returned to the caller.
+// Try every record even if one NAK fails; retain both the original and cleanup
+// errors so callers can diagnose records left for JetStream lease recovery.
+func releaseFetchedMessages(msgs []*nats.Msg, cause error) error {
+	for _, msg := range msgs {
+		if err := msg.Nak(); err != nil {
+			cause = errors.Join(cause, fmt.Errorf("queue-nats: failed to release fetched message: %w", err))
+		}
+	}
+	return cause
+}
+
+// Reenqueue persists a handler retry before acknowledging its source. Delayed
+// retries carry their due time in a reserved header; Dequeue defers them on the
+// server until due. No process-local timer holds the only updated attempt state.
+// An unchanged Attempt is a group deferral, which uses native NAK instead.
 func (n *NATSAdapter) Reenqueue(ctx context.Context, d *queue.Delivery, msg *queue.Message, at time.Time) error {
 	if d == nil || d.Token == nil {
 		return nil
 	}
-
+	if msg == nil {
+		return ErrNilMessage
+	}
+	raw, ok := d.Token.(*nats.Msg)
+	if !ok {
+		return fmt.Errorf("queue-nats: invalid delivery token: %T", d.Token)
+	}
 	n.mu.RLock()
-	if n.closed {
-		n.mu.RUnlock()
+	closed, js := n.closed, n.js
+	n.mu.RUnlock()
+	if closed {
 		return fmt.Errorf("queue-nats: adapter is closed")
 	}
-	n.mu.RUnlock()
-
-	delay := time.Until(at)
-	if delay > 0 {
-		if natsMsg, ok := d.Token.(*nats.Msg); ok {
-			return natsMsg.NakWithDelay(delay)
-		}
-
-		// Fallback for non-JetStream or mock tokens: track timer and schedule delayed re-enqueue
-		var timer *time.Timer
-		timer = time.AfterFunc(delay, func() {
-			n.mu.Lock()
-			delete(n.retryTimers, timer)
-			closed := n.closed
-			n.mu.Unlock()
-			if closed {
-				return
-			}
-			cbCtx := context.WithoutCancel(ctx)
-			if err := n.Enqueue(cbCtx, msg); err == nil {
-				_ = n.Ack(cbCtx, d)
-			}
-		})
-
-		n.mu.Lock()
-		if n.closed {
-			n.mu.Unlock()
-			timer.Stop()
-			return fmt.Errorf("queue-nats: adapter is closed")
-		}
-		if n.retryTimers == nil {
-			n.retryTimers = make(map[*time.Timer]struct{})
-		}
-		n.retryTimers[timer] = struct{}{}
-		n.mu.Unlock()
-		return nil
+	base, err := strconv.Atoi(raw.Header.Get(hdrAttempt))
+	if err != nil || base < 0 || msg.Attempt < base {
+		return fmt.Errorf("queue-nats: invalid retry attempt (published=%q, retry=%d)", raw.Header.Get(hdrAttempt), msg.Attempt)
 	}
-	if err := n.Enqueue(ctx, msg); err != nil {
+	if msg.Attempt == base {
+		if delay := time.Until(at); delay > 0 {
+			return raw.NakWithDelay(delay)
+		}
+		return raw.Nak()
+	}
+	if js == nil {
+		return fmt.Errorf("queue-nats: jetstream context is not initialized")
+	}
+	retry := buildNATSMsg(n.subjectFor(msg), msg)
+	if at.After(time.Now()) {
+		retry.Header.Set(hdrNotBefore, at.UTC().Format(time.RFC3339Nano))
+	}
+	var opts []nats.PubOpt
+	if ctx != nil {
+		opts = append(opts, nats.Context(ctx))
+	}
+	ack, err := js.PublishMsg(retry, opts...)
+	if err != nil {
 		return err
 	}
-	return n.Ack(ctx, d)
+	if ack == nil {
+		return errors.New("queue-nats: retry publication was not confirmed")
+	}
+	// Duplicate now identifies this retry attempt, never the original publish.
+	return raw.Ack()
 }
 
 // Ack confirms successful processing of a delivery.
@@ -562,10 +606,6 @@ func (n *NATSAdapter) Close() error {
 		return nil
 	}
 	n.closed = true
-	for t := range n.retryTimers {
-		t.Stop()
-	}
-	n.retryTimers = nil
 	subs := []*nats.Subscription{n.critSub, n.highSub, n.defaultSub, n.lowSub}
 	for _, s := range subs {
 		if s != nil {
