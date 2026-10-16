@@ -37,7 +37,7 @@ func WithLocation(loc *time.Location) Option {
 	}
 }
 
-// WithSeconds enables 6-field cron expressions with second precision.
+// WithSeconds enables optional seconds, accepting both five and six fields.
 func WithSeconds(enable bool) Option {
 	return func(c *schedulerConfig) {
 		c.withSeconds = enable
@@ -67,6 +67,7 @@ func WithLogger(l Logger) Option {
 // stop that waits for in-flight jobs.
 type Scheduler struct {
 	cronEngine *cron.Cron
+	parser     cron.Parser
 	location   *time.Location
 	logger     Logger
 	ctx        context.Context
@@ -114,13 +115,17 @@ func NewScheduler(opts ...Option) *Scheduler {
 		cron.WithLogger(cronLogger{logger: cfg.logger}),
 		cron.WithChain(wrappers...),
 	}
+	parserOptions := cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor
 	if cfg.withSeconds {
-		cronOpts = append(cronOpts, cron.WithSeconds())
+		parserOptions |= cron.SecondOptional
 	}
+	parser := cron.NewParser(parserOptions)
+	cronOpts = append(cronOpts, cron.WithParser(parser))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Scheduler{
 		cronEngine: cron.New(cronOpts...),
+		parser:     parser,
 		location:   cfg.location,
 		logger:     cfg.logger,
 		ctx:        ctx,
@@ -183,14 +188,16 @@ func (s *Scheduler) Register(task Task) error {
 		return fmt.Errorf("cron: task %T has no schedule (implement Schedule() or WriteSchedule())", task)
 	}
 
-	// Resolve the effective schedule zone: a typed Location wins over the
-	// string form (it is already resolved and IANA-correct); "Local" and
-	// fixed zones are both valid CRON_TZ values since they round-trip through
-	// loc.String().
+	// Typed locations take precedence and are retained directly, including
+	// fixed zones that cannot be loaded by name.
 	var tzPrefix string
+	var taskLocation *time.Location
 	if locTask, ok := task.(LocationAwareTask); ok {
-		if loc := locTask.Location(); loc != nil && loc.String() != "UTC" {
-			tzPrefix = loc.String()
+		if loc := locTask.Location(); loc != nil {
+			taskLocation = loc
+			if loc.String() != "UTC" {
+				tzPrefix = loc.String()
+			}
 		}
 	} else if tzTask, ok := task.(TimezoneAwareTask); ok {
 		// Compare case-insensitively for the UTC shortcut, but keep the
@@ -205,9 +212,28 @@ func (s *Scheduler) Register(task Task) error {
 	}
 
 	runner := NewTaskRunner(task, s.ctx)
-	id, err := s.AddJob(spec, runner)
-	if err != nil {
-		return err
+	var id EntryID
+	if taskLocation != nil {
+		// Parse the expression without re-loading the supplied location by name.
+		expression := spec
+		if strings.HasPrefix(expression, "CRON_TZ=") || strings.HasPrefix(expression, "TZ=") {
+			_, expression, _ = strings.Cut(expression, " ")
+		}
+		schedule, err := s.parser.Parse(expression)
+		if err != nil {
+			return fmt.Errorf("cron: invalid schedule %q: %w", spec, err)
+		}
+		if calendar, ok := schedule.(*cron.SpecSchedule); ok {
+			calendar.Location = taskLocation
+		}
+		id = s.cronEngine.Schedule(schedule, runner)
+		s.recordSpec(spec)
+	} else {
+		var err error
+		id, err = s.AddJob(spec, runner)
+		if err != nil {
+			return err
+		}
 	}
 	s.specMu.Lock()
 	s.runners = append(s.runners, runner)

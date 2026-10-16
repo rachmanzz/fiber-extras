@@ -110,6 +110,7 @@ func AttachAdapter(adapter Adapter) {
 }
 
 // GetDriver returns the driver matching the name, or the default driver if name is empty.
+// An explicit unregistered name returns nil.
 func GetDriver(name ...string) Driver {
 	globalManager.mu.RLock()
 	defer globalManager.mu.RUnlock()
@@ -118,6 +119,9 @@ func GetDriver(name ...string) Driver {
 		if d, ok := globalManager.drivers[name[0]]; ok {
 			return d
 		}
+	}
+	if len(name) > 0 && name[0] != "" {
+		return nil
 	}
 	return globalManager.defaultDriver
 }

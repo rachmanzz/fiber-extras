@@ -41,8 +41,9 @@ type Engine struct {
 }
 
 var (
-	globalDispatcher   Dispatcher
-	globalDispatcherMu sync.RWMutex
+	globalDispatcher        Dispatcher
+	globalDispatcherVersion uint64
+	globalDispatcherMu      sync.RWMutex
 )
 
 // NewEngine creates a new unstarted Worker Engine with the provided configuration and options.
@@ -95,10 +96,10 @@ func (e *Engine) Start() *Engine {
 		return e
 	}
 	e.started = true
+	e.wg.Add(e.cfg.MaxWorkers)
 	e.closedMu.Unlock()
 
 	for i := 0; i < e.cfg.MaxWorkers; i++ {
-		e.wg.Add(1)
 		go e.workerLoop(i + 1)
 	}
 
@@ -273,17 +274,6 @@ func (e *Engine) Shutdown() error {
 // If a dispatcher was already registered, it is shut down cleanly to prevent
 // leaking worker goroutines.
 func InitGlobal(cfg ...Config) *Engine {
-	globalDispatcherMu.Lock()
-	defer globalDispatcherMu.Unlock()
-
-	if globalDispatcher != nil {
-		if eng, ok := globalDispatcher.(*Engine); ok {
-			_ = eng.Shutdown()
-		} else if closer, ok := globalDispatcher.(interface{ Shutdown() error }); ok {
-			_ = closer.Shutdown()
-		}
-		globalDispatcher = nil
-	}
 
 	c := DefaultConfig()
 	if len(cfg) > 0 {
@@ -292,7 +282,14 @@ func InitGlobal(cfg ...Config) *Engine {
 
 	engine := NewEngine(c)
 	engine.Start()
+	globalDispatcherMu.Lock()
+	old := globalDispatcher
 	globalDispatcher = engine
+	globalDispatcherVersion++
+	globalDispatcherMu.Unlock()
+	if closer, ok := old.(interface{ Shutdown() error }); ok {
+		_ = closer.Shutdown()
+	}
 	return engine
 }
 
@@ -316,6 +313,7 @@ func GetDispatcher() Dispatcher {
 		engine := NewEngine(DefaultConfig())
 		engine.Start()
 		globalDispatcher = engine
+		globalDispatcherVersion++
 	}
 	return globalDispatcher
 }
@@ -325,6 +323,7 @@ func SetGlobalDispatcher(d Dispatcher) {
 	globalDispatcherMu.Lock()
 	defer globalDispatcherMu.Unlock()
 	globalDispatcher = d
+	globalDispatcherVersion++
 }
 
 // Dispatch submits a task to the global worker dispatcher.
@@ -339,18 +338,21 @@ func ExecuteSync(ctx context.Context, task Task) error {
 
 // Shutdown gracefully stops the global worker engine if initialized.
 func Shutdown() error {
-	globalDispatcherMu.Lock()
-	defer globalDispatcherMu.Unlock()
-
-	if globalDispatcher != nil {
-		var err error
-		if eng, ok := globalDispatcher.(*Engine); ok {
-			err = eng.Shutdown()
-		} else if closer, ok := globalDispatcher.(interface{ Shutdown() error }); ok {
-			err = closer.Shutdown()
-		}
-		globalDispatcher = nil
-		return err
+	globalDispatcherMu.RLock()
+	old := globalDispatcher
+	version := globalDispatcherVersion
+	globalDispatcherMu.RUnlock()
+	// Keep the closing engine visible so nested dispatches are rejected rather
+	// than lazily creating a replacement while shutdown is in progress.
+	var err error
+	if closer, ok := old.(interface{ Shutdown() error }); ok {
+		err = closer.Shutdown()
 	}
-	return nil
+	globalDispatcherMu.Lock()
+	if globalDispatcherVersion == version {
+		globalDispatcher = nil
+		globalDispatcherVersion++
+	}
+	globalDispatcherMu.Unlock()
+	return err
 }

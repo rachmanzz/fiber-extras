@@ -1,17 +1,20 @@
 package queue
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 )
 
-// MemoryDriver is an in-process queue adapter backed by a sorted slice.
+// MemoryDriver selects priority/FIFO among per-group heads using heaps.
 type MemoryDriver struct {
 	mu       sync.Mutex
-	messages []*Message
+	buckets  map[string]*memoryBucket
+	heads    memoryHeads
+	sequence uint64
+	pending  int
 	timers   map[*time.Timer]struct{}
 	closed   bool
 
@@ -29,8 +32,8 @@ func NewNamedMemoryDriver(name string) *MemoryDriver {
 		name = "memory"
 	}
 	return &MemoryDriver{
-		name:     name,
-		messages: make([]*Message, 0, 100),
+		name:    name,
+		buckets: make(map[string]*memoryBucket),
 	}
 }
 
@@ -51,16 +54,76 @@ func (m *MemoryDriver) Capabilities() Capabilities {
 	}
 }
 
-// memoryLess reports whether a should be dequeued before b: higher priority
-// first, then ascending GroupOrder within the same group, then FIFO by CreatedAt.
+// memoryLess is a transitive priority/FIFO comparator between eligible heads.
+// GroupOrder is handled separately inside a group's heap.
 func memoryLess(a, b *Message) bool {
 	if a.Priority != b.Priority {
 		return a.Priority > b.Priority
 	}
-	if a.GroupID != "" && a.GroupID == b.GroupID {
-		return a.GroupOrder < b.GroupOrder
-	}
 	return a.CreatedAt.Before(b.CreatedAt)
+}
+
+type memoryEntry struct {
+	msg      *Message
+	sequence uint64
+}
+
+func memoryEntryLess(a, b memoryEntry) bool {
+	if memoryLess(a.msg, b.msg) {
+		return true
+	}
+	if memoryLess(b.msg, a.msg) {
+		return false
+	}
+	return a.sequence < b.sequence
+}
+
+type memoryMessages struct {
+	grouped bool
+	entries []memoryEntry
+}
+
+func (h memoryMessages) Len() int { return len(h.entries) }
+func (h memoryMessages) Less(i, j int) bool {
+	a, b := h.entries[i], h.entries[j]
+	if a.msg.Priority != b.msg.Priority {
+		return a.msg.Priority > b.msg.Priority
+	}
+	if h.grouped && a.msg.GroupOrder != b.msg.GroupOrder {
+		return a.msg.GroupOrder < b.msg.GroupOrder
+	}
+	return memoryEntryLess(a, b)
+}
+func (h memoryMessages) Swap(i, j int) { h.entries[i], h.entries[j] = h.entries[j], h.entries[i] }
+func (h *memoryMessages) Push(v any)   { h.entries = append(h.entries, v.(memoryEntry)) }
+func (h *memoryMessages) Pop() any {
+	n := len(h.entries) - 1
+	v := h.entries[n]
+	h.entries[n] = memoryEntry{}
+	h.entries = h.entries[:n]
+	return v
+}
+
+type memoryBucket struct {
+	group    string
+	index    int
+	messages memoryMessages
+}
+type memoryHeads []*memoryBucket
+
+func (h memoryHeads) Len() int { return len(h) }
+func (h memoryHeads) Less(i, j int) bool {
+	return memoryEntryLess(h[i].messages.entries[0], h[j].messages.entries[0])
+}
+func (h memoryHeads) Swap(i, j int) { h[i], h[j] = h[j], h[i]; h[i].index = i; h[j].index = j }
+func (h *memoryHeads) Push(v any)   { b := v.(*memoryBucket); b.index = len(*h); *h = append(*h, b) }
+func (h *memoryHeads) Pop() any {
+	n := len(*h) - 1
+	b := (*h)[n]
+	(*h)[n] = nil
+	*h = (*h)[:n]
+	b.index = -1
+	return b
 }
 
 func (m *MemoryDriver) Enqueue(ctx context.Context, msg *Message) error {
@@ -73,15 +136,23 @@ func (m *MemoryDriver) Enqueue(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("queue-memory: driver is closed")
 	}
 
-	// Insert into the already-sorted slice at the boundary found by binary
-	// search (O(log n) lookup + O(n) shift) instead of re-sorting the whole
-	// slice on every Enqueue.
-	idx := sort.Search(len(m.messages), func(i int) bool {
-		return memoryLess(msg, m.messages[i])
-	})
-	m.messages = append(m.messages, nil)
-	copy(m.messages[idx+1:], m.messages[idx:])
-	m.messages[idx] = msg
+	if m.buckets == nil {
+		m.buckets = make(map[string]*memoryBucket)
+	}
+	bucket := m.buckets[msg.GroupID]
+	fresh := bucket == nil
+	if fresh {
+		bucket = &memoryBucket{group: msg.GroupID, messages: memoryMessages{grouped: msg.GroupID != ""}}
+		m.buckets[msg.GroupID] = bucket
+	}
+	m.sequence++
+	m.pending++
+	heap.Push(&bucket.messages, memoryEntry{msg: msg, sequence: m.sequence})
+	if fresh {
+		heap.Push(&m.heads, bucket)
+	} else {
+		heap.Fix(&m.heads, bucket.index)
+	}
 	return nil
 }
 
@@ -89,32 +160,30 @@ func (m *MemoryDriver) Dequeue(ctx context.Context, req DequeueRequest) ([]*Deli
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.messages) == 0 {
+	if len(m.heads) == 0 {
 		return nil, nil
 	}
-
 	batchSize := req.BatchSize
 	if batchSize <= 0 {
 		batchSize = 20
 	}
-
-	count := batchSize
-	if len(m.messages) < count {
-		count = len(m.messages)
+	capacity := batchSize
+	if capacity > m.pending {
+		capacity = m.pending
 	}
-
-	deliveries := make([]*Delivery, count)
-	for i := 0; i < count; i++ {
-		deliveries[i] = &Delivery{
-			Message: m.messages[i],
-			Token:   m.messages[i].ID,
+	deliveries := make([]*Delivery, 0, capacity)
+	for len(deliveries) < batchSize && len(m.heads) > 0 {
+		bucket := m.heads[0]
+		item := heap.Pop(&bucket.messages).(memoryEntry)
+		m.pending--
+		if bucket.messages.Len() == 0 {
+			heap.Pop(&m.heads)
+			delete(m.buckets, bucket.group)
+		} else {
+			heap.Fix(&m.heads, 0)
 		}
+		deliveries = append(deliveries, &Delivery{Message: item.msg, Token: item.msg.ID})
 	}
-	for i := 0; i < count; i++ {
-		m.messages[i] = nil
-	}
-	m.messages = m.messages[count:]
-
 	return deliveries, nil
 }
 
@@ -183,6 +252,8 @@ func (m *MemoryDriver) Close() error {
 		t.Stop()
 	}
 	m.timers = nil
-	m.messages = nil
+	m.heads = nil
+	m.pending = 0
+	m.buckets = nil
 	return nil
 }

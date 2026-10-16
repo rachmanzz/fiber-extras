@@ -571,7 +571,7 @@ See [`v3/queue-msgpack`](../queue-msgpack) for a complete example.
 
 ## 📊 Benchmarks
 
-Measured using Go's standard benchmarking framework (`go test -bench=. -benchmem`) on Linux `amd64` (11th Gen Intel® Core™ i7-1165G7 @ 2.80GHz):
+Historical figures from the earlier storage implementation (not the current heap scheduler), measured using Go's standard benchmarking framework (`go test -bench=. -benchmem`) on Linux `amd64` (11th Gen Intel® Core™ i7-1165G7 @ 2.80GHz):
 
 ```text
 goos: linux
@@ -583,7 +583,7 @@ BenchmarkQueue_Message_Creation-8        	 6782758	       345.2 ns/op	     288 B
 BenchmarkQueue_Dispatch_JSON-8           	 2691786	       985.3 ns/op	     378 B/op	       5 allocs/op
 ```
 
-- **In-Memory Priority Throughput (`EnqueueDequeue`)**: Over **17 million ops/sec** at **137.6 ns/op** and 56 B/op, confirming zero lock contention on memory driver operations.
+- **Memory driver**: rerun `go test -run=^$ -bench=BenchmarkQueue_Memory_EnqueueDequeue -benchmem` for current heap scheduler figures. The historical numbers above do not establish concurrent lock contention or current throughput.
 - **Message Model Instantiation**: Over **6.8 million msgs/sec** with functional options (`WithPriority`, `WithMaxAttempts`, `WithGroup`).
 - **End-to-End JSON Dispatch**: ~2.7 million dispatches/sec incorporating runtime JSON serialization, topic routing validation, and adapter storage.
 
@@ -593,3 +593,164 @@ BenchmarkQueue_Dispatch_JSON-8           	 2691786	       985.3 ns/op	     378 B
 
 This module is part of the [GoSuite](https://github.com/rachmanzz/gosuite) repository and is licensed under the [MIT License](../../LICENSE).
 
+
+## Optional memory budget
+
+A memory budget bounds **reserved bytes**, rather than process RSS or measured Go
+heap usage. It is disabled unless `WithMemoryBudget` is supplied and adds no new
+module dependencies. Multiple consumers can share the same budget.
+
+```go
+budget := queue.NewMemoryBudget(500 * 1024 * 1024) // 500 MiB
+consumer := queue.NewConsumer(driver, router, dispatcher,
+    queue.WithMemoryBudget(budget),
+    queue.WithMemoryEstimate(8 * 1024 * 1024), // anticipated total bytes per delivery
+)
+consumer.Start()
+```
+
+Admission reserves the estimate **before dequeue**, then accounts for at least the
+payload's backing capacity, message strings, headers, and a fixed envelope
+allowance. The default estimate is 64 KiB, capped at the configured budget limit. An explicit
+`WithMemoryEstimate` is never reduced: if it exceeds the limit, admission logs an
+error and pauses polling before dequeue. Increase the limit or correct the
+estimate; polling resumes automatically once the configured estimate fits. This
+also applies after shrinking the budget with `SetLimit`.
+Reserve enough for normal handler decoding and processing buffers; the consumer
+cannot infer arbitrary allocations made by application code.
+
+While admission waits for capacity, polling pauses without dequeuing messages.
+With a budget enabled, each dequeue requests **one delivery**, regardless of
+`WithBatchSize`, so a full batch is not materialized before admission. If the
+returned message needs more bytes than are currently available, it is Nacked and
+the adaptive drain stops until the next poll interval. This does not increment
+its handler attempt count. A message larger than the entire budget is routed to
+DLQ instead of waiting forever. The adapter may prefetch internally; its
+prefetch buffers are outside this accounting.
+
+Claims cover queued tasks, pending group batches, execution, joined sub-workers,
+and payloads retained by core fallback retry timers. Claims are reclaimed on
+success, failure, panic recovery, dispatch rejection, and shutdown after work
+finishes. Driver-managed delayed messages and the MemoryDriver backlog are
+outside the consumer budget, as are adapter tokens and other process memory.
+Set broker/prefetch limits separately when necessary.
+
+Handlers and sub-workers receive the budget through their context:
+
+```go
+router.Register("resize", func(ctx context.Context, msg *queue.Message, pool worker.SubWorkerPool) error {
+    // Reject immediately if the additional buffer cannot be reserved.
+    extra, err := queue.TryClaimMemory(ctx, 32 * 1024 * 1024)
+    if err != nil {
+        return err
+    }
+    defer extra.Close() // also automatically closed at the end of this delivery
+
+    buffer := make([]byte, 32 * 1024 * 1024)
+    _ = buffer // process data, then stop retaining it before releasing its claim
+    return nil
+})
+```
+
+`ClaimMemory(ctx, bytes)` waits for capacity and respects context cancellation.
+Prefer `TryClaimMemory` or reserve the full expected working set at admission:
+waiting for extra capacity while holding existing claims can deadlock handlers
+that are all waiting for one another to release memory. A blocking claim inside
+an ordered group must also not depend on releasing a later member's claim.
+
+For partial reclaim, call `reservation.Release(bytes)` once those bytes are no
+longer retained. `MemoryReservationFromContext(ctx)` exposes the admission
+reservation, whose `TryGrow(bytes)` reserves more without waiting. Automatic
+cleanup is a safety net; callers must not continue using allocated buffers after
+releasing the bytes that account for them.
+
+Standalone reservations are also available:
+
+```go
+reservation, err := budget.Claim(ctx, 16 * 1024 * 1024) // blocking, cancellable
+if err != nil {
+    return err
+}
+defer reservation.Close() // standalone claims require explicit cleanup
+
+// budget.TryClaim(bytes) rejects immediately when there is no capacity.
+// reservation.Release(bytes) reclaims part of a claim.
+// reservation.Close() releases the remainder and is idempotent.
+// budget.Used(), budget.Available(), budget.Limit() expose accounting.
+// budget.SetLimit(bytes) adjusts the limit; shrinking below Used is rejected.
+```
+
+Invalid sizes and claims larger than the complete budget fail immediately.
+Reclaim changes the budget counter; it does not force garbage collection or
+immediate release of RAM to the operating system. The application remains
+responsible for its overall runtime/container memory configuration.
+
+
+### Group retries and ordering
+
+Within one consumer, a failed or unsettled group member remains the retry head.
+Later members wait until that head is successfully acknowledged or transferred
+to DLQ; expiration of the backoff alone does not release the group. Failed Ack
+or failed DLQ publication also retains the barrier. Idle group state is removed
+after settlement, and pending barriers are cleared on consumer shutdown.
+
+If the broker never redelivers an unsettled head, the group remains blocked until
+that delivery is recovered or the consumer is restarted. Ordering coordination
+is local to the consumer; it does not coordinate multiple processes.
+
+
+A retry head is identified by its original topic and message ID together. A DLQ
+copy that preserves the same ID cannot acknowledge or release that original
+head. Oversized retry messages rejected by memory admission participate in the
+same serialized settlement transition: successful original Ack after DLQ
+publication releases the barrier, while settlement failure retains it.
+
+
+### Bounded oversized settlement and multiple pending group members
+
+Oversized admission submits a settlement operation to the same group drain as
+normal execution. The poller never waits on an active handler's group mutex.
+There is one oversized settlement slot per consumer, shared across groups and
+independent deliveries. The slot is released on completion or dispatch rejection;
+additional oversized deliveries are Nacked without consuming handler attempts.
+At saturation, progress for other broker messages still depends on the broker's
+redelivery ordering and backpressure behavior.
+
+This slot is a bounded exception to reservation accounting: Dequeue has already
+materialized an oversized message that cannot fit the configured budget. At most
+one such payload per consumer is retained for queued/active settlement, outside
+the normal byte claim (plus any transient message currently being dequeued).
+Adapter buffers and the MemoryDriver backlog remain outside consumer accounting.
+The byte budget is therefore still not a hard RSS ceiling.
+
+A group retains every known unsettled topic/ID, rather than only its current
+retry head. The earliest GroupOrder is the active barrier; equal orders follow
+local admission sequence. Once that member settles, the next unresolved member
+is promoted, including members rejected due to memory admission or a busy
+settlement slot. Earlier queued batches may still execute before later barriers.
+
+During Stop, polling is cancelled and joined before pending retries are flushed,
+so flushed jobs cannot be immediately dequeued again during shutdown. Accepted
+settlement operations are joined before the driver is closed.
+
+
+### MemoryDriver ordering and pre-execution backpressure
+
+MemoryDriver uses one message heap per group (with one shared bucket for
+independent messages), plus a heap that selects among eligible bucket heads.
+The existing priority-first policy is retained: higher priority precedes lower
+priority; within the same priority a group uses ascending GroupOrder. FIFO by
+CreatedAt and enqueue sequence provides stable ties. Each enqueue/dequeue uses
+heap operations instead of a comparator that changes rules across message pairs.
+
+Consumer records each received group message's original topic/ID and admission
+position before checking memory or handing it to a worker. Temporary memory
+pressure and worker queue rejection preserve this state while Nacking the
+payload back to the broker, without consuming a handler attempt. Redelivery
+keeps the original position, including when GroupOrder is the default zero.
+Already-known later members remain deferred until earlier originals settle.
+
+Admission metadata stays until settlement, recovery, or Stop; it does not hold
+the rejected payload. This remains local ordering of known deliveries, not
+coordination across processes or a guarantee about messages the broker has not
+yet returned to the consumer.
